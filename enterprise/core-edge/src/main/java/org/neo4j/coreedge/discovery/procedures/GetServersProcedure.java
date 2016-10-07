@@ -31,7 +31,7 @@ import org.neo4j.collection.RawIterator;
 import org.neo4j.coreedge.core.CoreEdgeClusterSettings;
 import org.neo4j.coreedge.core.consensus.LeaderLocator;
 import org.neo4j.coreedge.core.consensus.NoLeaderFoundException;
-import org.neo4j.coreedge.discovery.CoreAddresses;
+import org.neo4j.coreedge.discovery.ClientConnectorAddresses;
 import org.neo4j.coreedge.discovery.CoreTopologyService;
 import org.neo4j.coreedge.discovery.EdgeAddresses;
 import org.neo4j.coreedge.discovery.NoKnownAddressesException;
@@ -46,6 +46,7 @@ import org.neo4j.logging.Log;
 import org.neo4j.logging.LogProvider;
 
 import static java.util.Collections.emptySet;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.stream.Collectors.toSet;
 import static java.util.stream.Stream.concat;
 import static org.neo4j.kernel.api.proc.ProcedureSignature.procedureSignature;
@@ -92,7 +93,8 @@ public class GetServersProcedure extends CallableProcedure.BasicProcedure
         try
         {
             AdvertisedSocketAddress leaderAddress =
-                    discoveryService.coreServers().find( leaderLocator.getLeader() ).getBoltServer();
+                    discoveryService.coreServers().find( leaderLocator.getLeader() )
+                            .getClientConnectorAddresses().getBoltAddress();
             writeEndpoints = writeEndpoints( leaderAddress );
         }
         catch ( NoLeaderFoundException | NoKnownAddressesException e )
@@ -106,7 +108,8 @@ public class GetServersProcedure extends CallableProcedure.BasicProcedure
     private Set<ReadWriteRouteEndPoint> routeEndpoints()
     {
         Stream<AdvertisedSocketAddress> routers =
-                discoveryService.coreServers().addresses().stream().map( CoreAddresses::getBoltServer );
+                discoveryService.coreServers().addresses().stream()
+                        .map( server -> server.getClientConnectorAddresses().getBoltAddress() );
 
         return routers.map( ReadWriteRouteEndPoint::route ).collect( toSet() );
     }
@@ -119,9 +122,12 @@ public class GetServersProcedure extends CallableProcedure.BasicProcedure
     private Set<ReadWriteRouteEndPoint> readEndpoints()
     {
         Stream<AdvertisedSocketAddress> readEdge =
-                discoveryService.edgeServers().members().stream().map( EdgeAddresses::getBoltAddress );
+                discoveryService.edgeServers().members().stream()
+                        .map( EdgeAddresses::getClientConnectorAddresses )
+                        .map( ClientConnectorAddresses::getBoltAddress );
         Stream<AdvertisedSocketAddress> readCore =
-                discoveryService.coreServers().addresses().stream().map( CoreAddresses::getBoltServer );
+                discoveryService.coreServers().addresses().stream()
+                        .map( server -> server.getClientConnectorAddresses().getBoltAddress() );
 
         return concat( readEdge, readCore ).map( ReadWriteRouteEndPoint::read ).collect( toSet() );
     }
@@ -166,7 +172,8 @@ public class GetServersProcedure extends CallableProcedure.BasicProcedure
             servers.add( map );
         }
 
-        Object[] row = new Object[] { config.get( CoreEdgeClusterSettings.cluster_routing_ttl ), servers };
+        long ttl = MILLISECONDS.toSeconds( config.get( CoreEdgeClusterSettings.cluster_routing_ttl ) );
+        Object[] row = new Object[] {ttl, servers };
         return RawIterator.<Object[], ProcedureException>of(row);
     }
 

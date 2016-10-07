@@ -76,6 +76,11 @@
       <artifactId>neo4j-server-enterprise</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>org.neo4j</groupId>
+      <artifactId>neo4j-security-enterprise</artifactId>
+      <version>${project.version}</version>
+    </dependency>
   </dependencies>
 
   <licenses>
@@ -118,6 +123,8 @@
                   <arg value="org.neo4j.kernel.ha.HaSettings" />
                   <arg value="org.neo4j.consistency.ConsistencyCheckSettings" />
                   <arg value="org.neo4j.server.enterprise.EnterpriseServerSettings" />
+                  <arg value="org.neo4j.server.security.enterprise.configuration.SecuritySettings" />
+                  <arg value="org.neo4j.kernel.impl.enterprise.configuration.EnterpriseEditionSettings" />
                 </java>
 
                 <!-- Connector documentation is kept separate, because otherwise the
@@ -131,7 +138,7 @@
                 <java classname="org.neo4j.kernel.configuration.docs.GenerateConfigDocumentation"
                       classpathref="maven.compile.classpath" failonerror="true">
                   <arg line="-o ${project.build.directory}/docs/ops/configuration-http-connector-attributes.asciidoc" />
-                  <arg value="org.neo4j.server.configuration.ServerSettings$HttpConnector" />
+                  <arg value="org.neo4j.server.configuration.ClientConnectorSettings$HttpConnector" />
                 </java>
               </target>
             </configuration>

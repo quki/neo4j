@@ -22,6 +22,7 @@ package org.neo4j.coreedge.discovery.procedures;
 import org.junit.Test;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -32,6 +33,8 @@ import java.util.stream.Collectors;
 import org.neo4j.coreedge.core.CoreEdgeClusterSettings;
 import org.neo4j.coreedge.core.consensus.LeaderLocator;
 import org.neo4j.coreedge.core.consensus.NoLeaderFoundException;
+import org.neo4j.coreedge.discovery.ClientConnectorAddresses;
+import org.neo4j.coreedge.discovery.ClientConnectorAddresses.ConnectorUri;
 import org.neo4j.coreedge.discovery.CoreAddresses;
 import org.neo4j.coreedge.discovery.CoreTopology;
 import org.neo4j.coreedge.discovery.CoreTopologyService;
@@ -47,6 +50,8 @@ import org.neo4j.kernel.configuration.Config;
 
 import static java.util.Arrays.asList;
 import static java.util.Collections.emptySet;
+import static java.util.Collections.singletonList;
+
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.equalTo;
@@ -54,19 +59,45 @@ import static org.junit.Assert.assertEquals;
 import static org.mockito.Matchers.anyObject;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+
+import static org.neo4j.coreedge.core.CoreEdgeClusterSettings.cluster_routing_ttl;
+import static org.neo4j.coreedge.discovery.ClientConnectorAddresses.Scheme.bolt;
 import static org.neo4j.coreedge.identity.RaftTestMember.member;
 import static org.neo4j.helpers.collection.Iterators.asList;
+import static org.neo4j.helpers.collection.MapUtil.stringMap;
 import static org.neo4j.kernel.api.proc.Neo4jTypes.NTMap;
 import static org.neo4j.logging.NullLogProvider.getInstance;
 
 public class GetServersProcedureTest
 {
     private ClusterId clusterId = new ClusterId( UUID.randomUUID() );
-    private Config config = mock( Config.class );
+    private Config config = Config.defaults();
 
-    public GetServersProcedureTest()
+    @Test
+    public void ttlShouldBeInSeconds() throws Exception
     {
-        when( config.get( anyObject() ) ).thenReturn( 5L );
+        // given
+        final CoreTopologyService coreTopologyService = mock( CoreTopologyService.class );
+
+        LeaderLocator leaderLocator = mock( LeaderLocator.class );
+
+        final CoreTopology clusterTopology = new CoreTopology( clusterId, false, new HashMap<>() );
+        when( coreTopologyService.coreServers() ).thenReturn( clusterTopology );
+        when( coreTopologyService.edgeServers() ).thenReturn( new EdgeTopology( clusterId, emptySet() ) );
+
+        // set the TTL in minutes
+        config = config.augment( stringMap( cluster_routing_ttl.name(), "10m" ) );
+
+        final GetServersProcedure proc =
+                new GetServersProcedure( coreTopologyService, leaderLocator, config, getInstance() );
+
+        // when
+        List<Object[]> results = asList( proc.apply( null, new Object[0] ) );
+
+        // then
+        Object[] rows = results.get( 0 );
+        long ttlInSeconds = (long) rows[0];
+        assertEquals( 600, ttlInSeconds );
     }
 
     @Test
@@ -109,7 +140,7 @@ public class GetServersProcedureTest
         Object[] rows = results.get( 0 );
 
         long ttl = (long) rows[0];
-        assertEquals( (long) config.get( CoreEdgeClusterSettings.cluster_routing_ttl ), ttl );
+        assertEquals( (long) config.get( cluster_routing_ttl ) / 1000, ttl );
 
         List<Map<String,Object[]>> servers = (List<Map<String,Object[]>>) rows[1];
 
@@ -152,7 +183,7 @@ public class GetServersProcedureTest
         Object[] rows = results.get( 0 );
 
         long ttl = (long) rows[0];
-        assertEquals( (long) config.get( CoreEdgeClusterSettings.cluster_routing_ttl ), ttl );
+        assertEquals( (long) config.get( cluster_routing_ttl ) / 1000, ttl );
 
         List<Map<String,Object[]>> servers = (List<Map<String,Object[]>>) rows[1];
 
@@ -202,7 +233,7 @@ public class GetServersProcedureTest
         Object[] rows = results.get( 0 );
 
         long ttl = (long) rows[0];
-        assertEquals( (long) config.get( CoreEdgeClusterSettings.cluster_routing_ttl ), ttl );
+        assertEquals( (long) config.get( cluster_routing_ttl ) / 1000, ttl );
 
         List<Map<String,Object[]>> servers = (List<Map<String,Object[]>>) rows[1];
 
@@ -248,7 +279,7 @@ public class GetServersProcedureTest
         Object[] rows = results.get( 0 );
 
         long ttl = (long) rows[0];
-        assertEquals( (long) config.get( CoreEdgeClusterSettings.cluster_routing_ttl ), ttl );
+        assertEquals( (long) config.get( cluster_routing_ttl ) / 1000, ttl );
 
         List<Map<String,Object[]>> servers = (List<Map<String,Object[]>>) rows[1];
 
@@ -261,7 +292,7 @@ public class GetServersProcedureTest
         assertThat( readServers.get( "role" ), equalTo( "READ" ) );
         assertThat( asList( readServers.get( "addresses" ) ),
                 containsInAnyOrder( coreAddresses( 0 ).getRaftServer().toString(),
-                        edgeAddresses( 1 ).getBoltAddress().toString() ) );
+                        edgeAddresses( 1 ).getClientConnectorAddresses().getBoltAddress().toString() ) );
 
         Map<String,Object[]> routingServers = servers.get( 2 );
         assertThat( routingServers.get( "role" ), equalTo( "ROUTE" ) );
@@ -295,7 +326,7 @@ public class GetServersProcedureTest
         Object[] rows = results.get( 0 );
 
         long ttl = (long) rows[0];
-        assertEquals( (long) config.get( CoreEdgeClusterSettings.cluster_routing_ttl ), ttl );
+        assertEquals( (long) config.get( cluster_routing_ttl ) / 1000, ttl );
 
         List<Map<String,Object[]>> servers = (List<Map<String,Object[]>>) rows[1];
 
@@ -340,7 +371,7 @@ public class GetServersProcedureTest
         Object[] rows = results.get( 0 );
 
         long ttl = (long) rows[0];
-        assertEquals( (long) config.get( CoreEdgeClusterSettings.cluster_routing_ttl ), ttl );
+        assertEquals( (long) config.get( cluster_routing_ttl ) / 1000, ttl );
 
         List<Map<String,Object[]>> servers = (List<Map<String,Object[]>>) rows[1];
 
@@ -380,7 +411,7 @@ public class GetServersProcedureTest
         Object[] rows = results.get( 0 );
 
         long ttl = (long) rows[0];
-        assertEquals( (long) config.get( CoreEdgeClusterSettings.cluster_routing_ttl ), ttl );
+        assertEquals( (long) config.get( cluster_routing_ttl)  / 1000, ttl );
 
         List<Map<String,Object[]>> servers = (List<Map<String,Object[]>>) rows[1];
 
@@ -403,12 +434,14 @@ public class GetServersProcedureTest
     static CoreAddresses coreAddresses( int id )
     {
         AdvertisedSocketAddress advertisedSocketAddress = new AdvertisedSocketAddress( "localhost", (3000 + id) );
-        return new CoreAddresses( advertisedSocketAddress, advertisedSocketAddress, advertisedSocketAddress );
+        return new CoreAddresses( advertisedSocketAddress, advertisedSocketAddress,
+                new ClientConnectorAddresses( singletonList( new ConnectorUri( bolt, advertisedSocketAddress ) ) ) );
     }
 
     private static EdgeAddresses edgeAddresses( int id )
     {
         AdvertisedSocketAddress advertisedSocketAddress = new AdvertisedSocketAddress( "localhost", (3000 + id) );
-        return new EdgeAddresses( advertisedSocketAddress );
+        return new EdgeAddresses(
+                new ClientConnectorAddresses( singletonList( new ConnectorUri( bolt, advertisedSocketAddress ) ) ) );
     }
 }

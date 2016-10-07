@@ -40,11 +40,12 @@ import org.apache.shiro.util.Initializable;
 import java.util.Collection;
 import java.util.Map;
 
+import org.neo4j.kernel.api.security.AuthSubject;
 import org.neo4j.kernel.api.security.AuthToken;
 import org.neo4j.kernel.api.security.AuthenticationResult;
 import org.neo4j.kernel.api.security.exception.InvalidAuthTokenException;
 import org.neo4j.kernel.enterprise.api.security.EnterpriseAuthSubject;
-import org.neo4j.kernel.impl.enterprise.SecurityLog;
+import org.neo4j.server.security.enterprise.log.SecurityLog;
 import org.neo4j.server.security.enterprise.auth.plugin.spi.RealmLifecycle;
 
 import static org.neo4j.helpers.Strings.escape;
@@ -94,7 +95,8 @@ class MultiRealmAuthManager implements EnterpriseAuthAndUserManager
 
         try
         {
-            subject = new StandardEnterpriseAuthSubject( this, (ShiroSubject) securityManager.login( null, token ) );
+            subject = new StandardEnterpriseAuthSubject(
+                    this, (ShiroSubject) securityManager.login( null, token ) );
             if ( logSuccessfulLogin )
             {
                 securityLog.info( subject, "logged in" );
@@ -182,6 +184,12 @@ class MultiRealmAuthManager implements EnterpriseAuthAndUserManager
                 ((RealmLifecycle) realm).shutdown();
             }
         }
+    }
+
+    @Override
+    public EnterpriseUserManager getUserManager( AuthSubject authSubject )
+    {
+        return new PersonalUserManager( userManager, authSubject, securityLog );
     }
 
     @Override

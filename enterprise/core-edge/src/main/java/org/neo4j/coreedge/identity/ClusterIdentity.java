@@ -97,12 +97,14 @@ public class ClusterIdentity
                     if ( clock.millis() < endTime )
                     {
                         retryWaiter.apply();
+                        topologyService.refreshCoreTopology();
                         topology = topologyService.coreServers();
                     }
                     else
                     {
-                        throw new TimeoutException( "Failed binding to cluster in time. Last topology was: " +
-                                topology );
+                        throw new TimeoutException( String.format( "Failed to join a cluster with members %s. Another" +
+                                " member should have published a clusterId but none was detected. Please restart the " +
+                                "cluster.", topology ));
                     }
                 }
 
@@ -122,7 +124,7 @@ public class ClusterIdentity
 
     private void publishClusterId( ClusterId localClusterId ) throws BindingException
     {
-        boolean success = topologyService.casClusterId( localClusterId );
+        boolean success = topologyService.setClusterId( localClusterId );
         if ( !success )
         {
             throw new BindingException( "Failed to publish: " + localClusterId );
@@ -132,5 +134,4 @@ public class ClusterIdentity
             log.info( "Published: " + localClusterId );
         }
     }
-
 }

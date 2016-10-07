@@ -26,6 +26,7 @@ import java.util.function.BiFunction;
 import java.util.function.BooleanSupplier;
 
 import org.neo4j.backup.OnlineBackup;
+import org.neo4j.com.ComException;
 import org.neo4j.coreedge.discovery.Cluster;
 import org.neo4j.helpers.SocketAddress;
 
@@ -35,7 +36,7 @@ class BackupLoad extends RepeatUntilOnSelectedMemberCallable
     private final BiFunction<Boolean,Integer,SocketAddress> backupAddress;
 
     BackupLoad( BooleanSupplier keepGoing, Runnable onFailure, Cluster cluster, File baseDirectory,
-            BiFunction<Boolean, Integer, SocketAddress> backupAddress )
+            BiFunction<Boolean,Integer,SocketAddress> backupAddress )
     {
         super( keepGoing, onFailure, cluster, cluster.edgeMembers().isEmpty() );
         this.baseDirectory = baseDirectory;
@@ -43,7 +44,7 @@ class BackupLoad extends RepeatUntilOnSelectedMemberCallable
     }
 
     @Override
-    protected boolean doWorkOnMember( boolean isCore, int id )
+    protected void doWorkOnMember( boolean isCore, int id )
     {
         SocketAddress address = backupAddress.apply( isCore, id );
         File backupDirectory = new File( baseDirectory, Integer.toString( address.getPort() ) );
@@ -55,20 +56,29 @@ class BackupLoad extends RepeatUntilOnSelectedMemberCallable
         }
         catch ( RuntimeException e )
         {
-            if ( e.getCause() instanceof ConnectException )
+            if ( isConnectionError( e ) )
             {
                 // if we could not connect, wait a bit and try again...
                 LockSupport.parkNanos( 10_000_000 );
-                return true;
+                return;
             }
             throw e;
         }
 
-        boolean success = backup.isConsistent();
-        if ( !success )
+        if ( !backup.isConsistent() )
         {
-            System.err.println( "Not consistent backup from " + address );
+            throw new RuntimeException( "Not consistent backup from " + address );
         }
-        return success;
+    }
+
+    private boolean isConnectionError( RuntimeException e )
+    {
+        return e.getCause() instanceof ConnectException || isChannelClosedException( e ) ||
+                isChannelClosedException( e.getCause() );
+    }
+
+    private boolean isChannelClosedException( Throwable e )
+    {
+        return e instanceof ComException && "Channel has been closed".equals( e.getMessage() );
     }
 }

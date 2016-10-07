@@ -61,7 +61,6 @@ import org.neo4j.kernel.ha.HighlyAvailableGraphDatabase;
 import org.neo4j.kernel.impl.core.ThreadToStatementContextBridge;
 import org.neo4j.kernel.impl.ha.ClusterManager;
 import org.neo4j.kernel.impl.storageengine.impl.recordstorage.RecordStorageEngine;
-import org.neo4j.kernel.impl.store.MetaDataStore;
 import org.neo4j.kernel.impl.store.format.highlimit.HighLimit;
 import org.neo4j.kernel.impl.store.format.standard.StandardV3_0;
 import org.neo4j.kernel.impl.storemigration.StoreUpgrader;
@@ -73,6 +72,7 @@ import org.neo4j.register.Registers;
 import org.neo4j.server.CommunityBootstrapper;
 import org.neo4j.server.ServerBootstrapper;
 import org.neo4j.server.ServerTestUtils;
+import org.neo4j.server.configuration.ClientConnectorSettings;
 import org.neo4j.test.TestGraphDatabaseFactory;
 import org.neo4j.test.Unzip;
 import org.neo4j.test.rule.SuppressOutput;
@@ -88,7 +88,6 @@ import static org.neo4j.helpers.collection.Iterables.count;
 import static org.neo4j.helpers.collection.MapUtil.stringMap;
 import static org.neo4j.kernel.impl.ha.ClusterManager.allSeesAllAsAvailable;
 import static org.neo4j.kernel.impl.ha.ClusterManager.clusterOfSize;
-import static org.neo4j.server.configuration.ServerSettings.httpConnector;
 
 @RunWith( Enclosed.class )
 public class StoreUpgradeIntegrationTest
@@ -220,8 +219,8 @@ public class StoreUpgradeIntegrationTest
             props.setProperty( GraphDatabaseSettings.logs_directory.name(), rootDir.getAbsolutePath() );
             props.setProperty( GraphDatabaseSettings.allow_store_upgrade.name(), "true" );
             props.setProperty( GraphDatabaseSettings.pagecache_memory.name(), "8m" );
-            props.setProperty( httpConnector( "1" ).type.name(), "HTTP" );
-            props.setProperty( httpConnector( "1" ).enabled.name(), "true" );
+            props.setProperty( ClientConnectorSettings.httpConnector( "http" ).type.name(), "HTTP" );
+            props.setProperty( ClientConnectorSettings.httpConnector( "http" ).enabled.name(), "true" );
             try ( FileWriter writer = new FileWriter( configFile ) )
             {
                 props.store( writer, "" );
@@ -332,7 +331,7 @@ public class StoreUpgradeIntegrationTest
             {
                 assertTrue( ex.getCause() instanceof LifecycleException );
                 Throwable realException = ex.getCause().getCause();
-                assertTrue( Exceptions.contains( realException, MetaDataStore.DEFAULT_NAME,
+                assertTrue( "Unexpected exception", Exceptions.contains( realException,
                         StoreUpgrader.UnexpectedUpgradingStoreVersionException.class ) );
             }
         }

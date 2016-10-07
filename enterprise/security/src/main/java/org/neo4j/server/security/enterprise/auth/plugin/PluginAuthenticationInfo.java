@@ -23,26 +23,28 @@ import org.apache.shiro.authc.SimpleAuthenticationInfo;
 import org.apache.shiro.crypto.hash.SimpleHash;
 import org.apache.shiro.util.ByteSource;
 
+import org.neo4j.kernel.api.security.AuthenticationResult;
 import org.neo4j.server.security.enterprise.auth.SecureHasher;
+import org.neo4j.server.security.enterprise.auth.ShiroAuthenticationInfo;
 import org.neo4j.server.security.enterprise.auth.plugin.spi.AuthenticationInfo;
 import org.neo4j.server.security.enterprise.auth.plugin.spi.CacheableAuthenticationInfo;
 import org.neo4j.server.security.enterprise.auth.plugin.spi.CustomCacheableAuthenticationInfo;
 
-public class PluginAuthenticationInfo extends SimpleAuthenticationInfo implements CustomCredentialsMatcherSupplier
+public class PluginAuthenticationInfo extends ShiroAuthenticationInfo implements CustomCredentialsMatcherSupplier
 {
     private CustomCacheableAuthenticationInfo.CredentialsMatcher credentialsMatcher;
 
     public PluginAuthenticationInfo( Object principal, String realmName,
             CustomCacheableAuthenticationInfo.CredentialsMatcher credentialsMatcher )
     {
-        super( principal, null, realmName );
+        super( principal, null, realmName, AuthenticationResult.SUCCESS );
         this.credentialsMatcher = credentialsMatcher;
     }
 
     public PluginAuthenticationInfo( Object principal, Object hashedCredentials, ByteSource credentialsSalt,
             String realmName )
     {
-        super( principal, hashedCredentials, credentialsSalt, realmName );
+        super( principal, hashedCredentials, credentialsSalt, realmName, AuthenticationResult.SUCCESS );
     }
 
     @Override
@@ -53,13 +55,13 @@ public class PluginAuthenticationInfo extends SimpleAuthenticationInfo implement
 
     private static PluginAuthenticationInfo create( AuthenticationInfo authenticationInfo, String realmName )
     {
-        return new PluginAuthenticationInfo( authenticationInfo.getPrincipal(), realmName, null );
+        return new PluginAuthenticationInfo( authenticationInfo.principal(), realmName, null );
     }
 
     private static PluginAuthenticationInfo create( AuthenticationInfo authenticationInfo, SimpleHash hashedCredentials,
             String realmName )
     {
-        return new PluginAuthenticationInfo( authenticationInfo.getPrincipal(),
+        return new PluginAuthenticationInfo( authenticationInfo.principal(),
                 hashedCredentials.getBytes(), hashedCredentials.getSalt(), realmName );
     }
 
@@ -69,11 +71,11 @@ public class PluginAuthenticationInfo extends SimpleAuthenticationInfo implement
         if ( authenticationInfo instanceof CustomCacheableAuthenticationInfo )
         {
             CustomCacheableAuthenticationInfo info = (CustomCacheableAuthenticationInfo) authenticationInfo;
-            return new PluginAuthenticationInfo( authenticationInfo, realmName, info.getCredentialsMatcher() );
+            return new PluginAuthenticationInfo( authenticationInfo, realmName, info.credentialsMatcher() );
         }
         else if ( authenticationInfo instanceof CacheableAuthenticationInfo )
         {
-            byte[] credentials = ((CacheableAuthenticationInfo) authenticationInfo).getCredentials();
+            byte[] credentials = ((CacheableAuthenticationInfo) authenticationInfo).credentials();
             SimpleHash hashedCredentials = secureHasher.hash( credentials );
             return PluginAuthenticationInfo.create( authenticationInfo, hashedCredentials, realmName );
         }

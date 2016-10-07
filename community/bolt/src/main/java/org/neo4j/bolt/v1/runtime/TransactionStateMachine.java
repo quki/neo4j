@@ -25,14 +25,13 @@ import java.util.Map;
 
 import org.neo4j.bolt.security.auth.AuthenticationResult;
 import org.neo4j.bolt.v1.runtime.bookmarking.Bookmark;
-import org.neo4j.bolt.v1.runtime.cypher.CypherAdapterStream;
 import org.neo4j.bolt.v1.runtime.cypher.StatementMetadata;
 import org.neo4j.bolt.v1.runtime.cypher.StatementProcessor;
 import org.neo4j.bolt.v1.runtime.spi.BoltResult;
 import org.neo4j.bolt.v1.runtime.spi.BookmarkResult;
 import org.neo4j.cypher.InvalidSemanticsException;
+import org.neo4j.function.ThrowingAction;
 import org.neo4j.function.ThrowingConsumer;
-import org.neo4j.graphdb.Result;
 import org.neo4j.kernel.api.KernelTransaction;
 import org.neo4j.kernel.api.exceptions.KernelException;
 import org.neo4j.kernel.api.exceptions.Status;
@@ -102,8 +101,7 @@ public class TransactionStateMachine implements StatementProcessor
     @Override
     public void reset() throws TransactionFailureException
     {
-        state.rollbackTransaction( ctx );
-        state.closeResult( ctx );
+        state.terminateQueryAndRollbackTransaction( ctx );
         state = State.AUTO_COMMIT;
     }
 
@@ -172,22 +170,21 @@ public class TransactionStateMachine implements StatementProcessor
                             throw new QueryExecutionKernelException(
                                     new InvalidSemanticsException( "No current transaction to rollback." ) );
                         }
-                        else if( spi.isPeriodicCommit( statement ) )
+                        else if ( spi.isPeriodicCommit( statement ) )
                         {
-                            Result result = executeQuery( ctx, spi, statement, params );
-
-                            ctx.currentTransaction = spi.beginTransaction( ctx.authSubject );
-
-                            ctx.currentResult = new CypherAdapterStream( result, ctx.clock );
+                            BoltResultHandle resultHandle = executeQuery( ctx, spi, statement, params, () -> {} );
+                            ctx.currentResultHandle = resultHandle;
+                            ctx.currentResult = resultHandle.start();
+                            ctx.currentTransaction = null; // Periodic commit will change the current transaction, so
+                            // we can't trust this to point to the actual current transaction;
                             return AUTO_COMMIT;
                         }
                         else
                         {
                             ctx.currentTransaction = spi.beginTransaction( ctx.authSubject );
-
-                            Result result = execute( ctx, spi, statement, params );
-
-                            ctx.currentResult = new CypherAdapterStream( result, ctx.clock );
+                            BoltResultHandle resultHandle = execute( ctx, spi, statement, params );
+                            ctx.currentResultHandle = resultHandle;
+                            ctx.currentResult = resultHandle.start();
                             return AUTO_COMMIT;
                         }
                     }
@@ -196,30 +193,14 @@ public class TransactionStateMachine implements StatementProcessor
                      * In AUTO_COMMIT we must make sure to fail, close and set the current
                      * transaction to null.
                      */
-                    private Result execute( MutableTransactionState ctx, SPI spi,
+                    private BoltResultHandle execute( MutableTransactionState ctx, SPI spi,
                             String statement, Map<String,Object> params )
                             throws TransactionFailureException, QueryExecutionKernelException
                     {
-                        try
+                        return executeQuery( ctx, spi, statement, params, () ->
                         {
-                            return executeQuery( ctx, spi, statement, params );
-                        }
-                        catch ( Throwable e )
-                        {
-                            if (ctx.currentTransaction != null)
-                            {
-                                try
-                                {
-                                    ctx.currentTransaction.failure();
-                                    ctx.currentTransaction.close();
-                                }
-                                finally
-                                {
-                                    ctx.currentTransaction = null;
-                                }
-                            }
-                            throw e;
-                        }
+                           closeTransaction( ctx, false );
+                        } );
                     }
 
                     @Override
@@ -229,12 +210,7 @@ public class TransactionStateMachine implements StatementProcessor
                         assert ctx.currentResult != null;
                         resultConsumer.accept( ctx.currentResult );
                         ctx.currentResult.close();
-                        if ( ctx.currentTransaction != null )
-                        {
-                            ctx.currentTransaction.success();
-                            ctx.currentTransaction.close();
-                            ctx.currentTransaction = null;
-                        }
+                        closeTransaction( ctx, true );
                     }
                 },
         EXPLICIT_TRANSACTION
@@ -250,10 +226,7 @@ public class TransactionStateMachine implements StatementProcessor
                         }
                         else if ( statement.equalsIgnoreCase( COMMIT ) )
                         {
-                            ctx.currentTransaction.success();
-                            ctx.currentTransaction.close();
-                            ctx.currentTransaction = null;
-
+                            closeTransaction( ctx, true );
                             long txId = spi.newestEncounteredTxId();
                             Bookmark bookmark = new Bookmark( txId );
                             ctx.currentResult = new BookmarkResult( bookmark );
@@ -262,9 +235,7 @@ public class TransactionStateMachine implements StatementProcessor
                         }
                         else if ( statement.equalsIgnoreCase( ROLLBACK ) )
                         {
-                            ctx.currentTransaction.failure();
-                            ctx.currentTransaction.close();
-                            ctx.currentTransaction = null;
+                            closeTransaction( ctx, false );
                             ctx.currentResult = BoltResult.EMPTY;
                             return AUTO_COMMIT;
                         }
@@ -276,28 +247,24 @@ public class TransactionStateMachine implements StatementProcessor
                         }
                         else
                         {
-                            Result result = execute( ctx, spi, statement, params );
-
-                            ctx.currentResult = new CypherAdapterStream( result, ctx.clock );
+                            ctx.currentResultHandle = execute( ctx, spi, statement, params );
+                            ctx.currentResult = ctx.currentResultHandle.start();
                             return EXPLICIT_TRANSACTION;
                         }
                     }
 
-                    private Result execute( MutableTransactionState ctx, SPI spi,
-                            String statement, Map<String,Object> params ) throws QueryExecutionKernelException
+                    private BoltResultHandle execute( MutableTransactionState ctx, SPI spi,
+                            String statement, Map<String,Object> params )
+                            throws QueryExecutionKernelException
                     {
-                        try
-                        {
-                            return executeQuery( ctx, spi, statement, params );
-                        }
-                        catch ( Throwable e )
-                        {
-                          if (ctx.currentTransaction != null)
-                          {
-                              ctx.currentTransaction.failure();
-                          }
-                            throw e;
-                        }
+                        return executeQuery( ctx, spi, statement, params,
+                                () ->
+                                {
+                                    if ( ctx.currentTransaction != null )
+                                    {
+                                        ctx.currentTransaction.failure();
+                                    }
+                                } );
                     }
 
                     @Override
@@ -317,34 +284,71 @@ public class TransactionStateMachine implements StatementProcessor
         abstract void streamResult( MutableTransactionState ctx,
                                     ThrowingConsumer<BoltResult, Exception> resultConsumer ) throws Exception;
 
-        void rollbackTransaction( MutableTransactionState ctx ) throws TransactionFailureException
+        void terminateQueryAndRollbackTransaction( MutableTransactionState ctx ) throws TransactionFailureException
         {
-            if ( ctx.currentTransaction != null )
+            if ( ctx.currentResultHandle != null )
             {
-                if ( ctx.currentTransaction.isOpen() )
-                {
-                    ctx.currentTransaction.failure();
-                    ctx.currentTransaction.close();
-                    ctx.currentTransaction = null;
-                }
+                ctx.currentResultHandle.terminate();
+                ctx.currentResultHandle = null;
             }
-        }
-
-        void closeResult( MutableTransactionState ctx )
-        {
             if ( ctx.currentResult != null )
             {
                 ctx.currentResult.close();
                 ctx.currentResult = null;
             }
+
+           closeTransaction( ctx, false);
         }
 
+        /*
+         * This is overly careful about always closing and nulling the transaction since
+         * reset can cause ctx.currentTransaction to be null we store in local variable.
+         */
+        void closeTransaction(MutableTransactionState ctx, boolean success) throws TransactionFailureException
+        {
+            KernelTransaction tx = ctx.currentTransaction;
+            ctx.currentTransaction = null;
+            if (tx != null)
+            {
+                try
+                {
+                    if ( success )
+                    {
+                        tx.success();
+                    }
+                    else
+                    {
+                        tx.failure();
+                    }
+                    if (tx.isOpen())
+                    {
+                        tx.close();
+                    }
+                }
+                finally
+                {
+                    ctx.currentTransaction = null;
+                }
+            }
+        }
     }
 
-    private static Result executeQuery( MutableTransactionState ctx, SPI spi, String statement,
-                                        Map<String, Object> params ) throws QueryExecutionKernelException
+    private static BoltResultHandle executeQuery( MutableTransactionState ctx, SPI spi, String statement,
+                                                  Map<String,Object> params, ThrowingAction<KernelException> onFail )
+            throws QueryExecutionKernelException
     {
-        return spi.executeQuery( ctx.querySource, ctx.authSubject, statement, params );
+        return spi.executeQuery( ctx.querySource, ctx.authSubject, statement, params, onFail );
+    }
+
+    /**
+     * This interface makes it possible to abort queries even before they have returned a Result object.
+     * In some cases, creating the Result object will take as long as running the query takes. This way, we can
+     * terminate the underlying transaction while the Result object is created.
+     */
+    interface BoltResultHandle
+    {
+        BoltResult start() throws KernelException;
+        void terminate();
     }
 
     static class MutableTransactionState
@@ -371,6 +375,7 @@ public class TransactionStateMachine implements StatementProcessor
         };
 
         String querySource;
+        BoltResultHandle currentResultHandle;
 
         private MutableTransactionState( AuthenticationResult authenticationResult, Clock clock )
         {
@@ -393,7 +398,10 @@ public class TransactionStateMachine implements StatementProcessor
 
         boolean isPeriodicCommit( String query );
 
-        Result executeQuery( String querySource, AuthSubject authSubject, String statement, Map<String, Object> params )
-                throws QueryExecutionKernelException;
+        BoltResultHandle executeQuery( String querySource,
+                AuthSubject authSubject,
+                String statement,
+                Map<String,Object> params,
+                ThrowingAction<KernelException> onFail ) throws QueryExecutionKernelException;
     }
 }

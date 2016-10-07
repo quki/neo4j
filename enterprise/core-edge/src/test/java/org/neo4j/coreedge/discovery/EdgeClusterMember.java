@@ -24,12 +24,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.IntFunction;
 
+import org.neo4j.coreedge.catchup.tx.TxPollingClient;
 import org.neo4j.coreedge.core.CoreEdgeClusterSettings;
 import org.neo4j.coreedge.edge.EdgeGraphDatabase;
-import org.neo4j.helpers.AdvertisedSocketAddress;
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
+import org.neo4j.helpers.AdvertisedSocketAddress;
 import org.neo4j.kernel.GraphDatabaseDependencies;
+import org.neo4j.kernel.configuration.Config;
 import org.neo4j.logging.Level;
+import org.neo4j.server.configuration.ClientConnectorSettings;
+import org.neo4j.server.configuration.ClientConnectorSettings.HttpConnector.Encryption;
 
 import static java.lang.String.format;
 import static java.util.stream.Collectors.joining;
@@ -41,15 +45,17 @@ public class EdgeClusterMember implements ClusterMember
     private final DiscoveryServiceFactory discoveryServiceFactory;
     private final File storeDir;
     private final int memberId;
+    private final String boltAdvertisedAddress;
     private EdgeGraphDatabase database;
 
-    EdgeClusterMember( File parentDir, int memberId, DiscoveryServiceFactory discoveryServiceFactory,
-                       List<AdvertisedSocketAddress> coreMemberHazelcastAddresses,
-                       Map<String, String> extraParams,
-                       Map<String, IntFunction<String>> instanceExtraParams,
-                       String recordFormat )
+    public EdgeClusterMember( File parentDir, int memberId, DiscoveryServiceFactory discoveryServiceFactory,
+            List<AdvertisedSocketAddress> coreMemberHazelcastAddresses, Map<String,String> extraParams,
+            Map<String,IntFunction<String>> instanceExtraParams, String recordFormat )
     {
         this.memberId = memberId;
+        int boltPort = 9000 + memberId;
+        int httpPort = 11000 + memberId;
+
         String initialHosts = coreMemberHazelcastAddresses.stream()
                 .map( AdvertisedSocketAddress::toString ).collect( joining( "," ) );
 
@@ -68,8 +74,13 @@ public class EdgeClusterMember implements ClusterMember
 
         config.put( new GraphDatabaseSettings.BoltConnector( "bolt" ).type.name(), "BOLT" );
         config.put( new GraphDatabaseSettings.BoltConnector( "bolt" ).enabled.name(), "true" );
-        config.put( new GraphDatabaseSettings.BoltConnector( "bolt" ).address.name(), "0.0.0.0:" + (9000 + memberId) );
-        config.put( new GraphDatabaseSettings.BoltConnector( "bolt" ).advertised_address.name(), "127.0.0.1:" + (9000 + memberId) );
+        config.put( new GraphDatabaseSettings.BoltConnector( "bolt" ).listen_address.name(), "127.0.0.1:" + boltPort );
+        boltAdvertisedAddress = "127.0.0.1:" + boltPort;
+        config.put( new GraphDatabaseSettings.BoltConnector( "bolt" ).advertised_address.name(), boltAdvertisedAddress );
+        config.put( new ClientConnectorSettings.HttpConnector( "http", Encryption.NONE ).type.name(), "HTTP" );
+        config.put( new ClientConnectorSettings.HttpConnector( "http", Encryption.NONE ).enabled.name(), "true" );
+        config.put( new ClientConnectorSettings.HttpConnector( "http", Encryption.NONE ).listen_address.name(), "127.0.0.1:" + httpPort );
+        config.put( new ClientConnectorSettings.HttpConnector( "http", Encryption.NONE ).advertised_address.name(), "127.0.0.1:" + httpPort );
 
         File neo4jHome = new File( parentDir, "server-edge-" + memberId );
         config.put( GraphDatabaseSettings.logs_directory.name(), new File( neo4jHome, "logs" ).getAbsolutePath() );
@@ -79,7 +90,18 @@ public class EdgeClusterMember implements ClusterMember
         storeDir.mkdirs();
     }
 
+    public String boltAdvertisedAddress()
+    {
+        return boltAdvertisedAddress;
+    }
+
+    public String routingURI()
+    {
+        return String.format( "bolt+routing://%s", boltAdvertisedAddress );
+    }
+
     @Override
+
     public void start()
     {
         database = new EdgeGraphDatabase( storeDir, config,
@@ -96,10 +118,21 @@ public class EdgeClusterMember implements ClusterMember
         database = null;
     }
 
+    public TxPollingClient txPollingClient()
+    {
+        return database.getDependencyResolver().resolveDependency( TxPollingClient.class );
+    }
+
     @Override
     public EdgeGraphDatabase database()
     {
         return database;
+    }
+
+    @Override
+    public ClientConnectorAddresses clientConnectorAddresses()
+    {
+        return ClientConnectorAddresses.extractFromConfig( new Config( this.config ) );
     }
 
     public File storeDir()
@@ -110,5 +143,10 @@ public class EdgeClusterMember implements ClusterMember
     public String toString()
     {
         return format( "EdgeClusterMember{memberId=%d}", memberId );
+    }
+
+    public String directURI()
+    {
+        return String.format( "bolt://%s", boltAdvertisedAddress );
     }
 }

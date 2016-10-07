@@ -19,21 +19,14 @@
  */
 package org.neo4j.kernel.impl.factory;
 
-import java.util.List;
-import java.util.ArrayList;
-import java.util.stream.StreamSupport;
-
 import org.neo4j.graphdb.DependencyResolver;
-import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.helpers.Service;
 import org.neo4j.io.fs.FileSystemAbstraction;
 import org.neo4j.io.pagecache.IOLimiter;
 import org.neo4j.kernel.NeoStoreDataSource;
 import org.neo4j.kernel.api.bolt.BoltConnectionTracker;
 import org.neo4j.kernel.api.exceptions.KernelException;
-import org.neo4j.kernel.api.exceptions.ProcedureException;
-import org.neo4j.kernel.api.exceptions.Status;
-import org.neo4j.kernel.api.security.AuthManager;
+import org.neo4j.kernel.api.security.SecurityModule;
 import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.impl.api.CommitProcessFactory;
 import org.neo4j.kernel.impl.api.SchemaWriteGuard;
@@ -51,11 +44,12 @@ import org.neo4j.kernel.impl.store.id.IdGeneratorFactory;
 import org.neo4j.kernel.impl.store.id.IdReuseEligibility;
 import org.neo4j.kernel.impl.store.id.configuration.IdTypeConfigurationProvider;
 import org.neo4j.kernel.impl.transaction.TransactionHeaderInformationFactory;
+import org.neo4j.kernel.impl.util.DependencySatisfier;
 import org.neo4j.kernel.impl.util.JobScheduler;
 import org.neo4j.kernel.info.DiagnosticsManager;
 import org.neo4j.kernel.internal.KernelDiagnostics;
+import org.neo4j.kernel.lifecycle.LifeSupport;
 import org.neo4j.logging.Log;
-import org.neo4j.logging.NullLog;
 import org.neo4j.udc.UsageData;
 import org.neo4j.udc.UsageDataKeys;
 
@@ -69,21 +63,12 @@ public abstract class EditionModule
 {
     public void registerProcedures( Procedures procedures ) throws KernelException
     {
-        // hack to force IBM JDK 8 to load all classes before reflective procedure compilation
-        Service.load( ProceduresProvider.class );
-
         procedures.registerProcedure( org.neo4j.kernel.builtinprocs.BuiltInProcedures.class );
-        registerProceduresFromProvider( "auth-procedures-provider", procedures );
 
         registerEditionSpecificProcedures( procedures );
     }
 
     protected abstract void registerEditionSpecificProcedures( Procedures procedures ) throws KernelException;
-
-    protected Log authManagerLog()
-    {
-        return NullLog.getInstance();
-    }
 
     public IdGeneratorFactory idGeneratorFactory;
     public IdTypeConfigurationProvider idTypeConfigurationProvider;
@@ -134,87 +119,74 @@ public abstract class EditionModule
         config.augment( singletonMap( Configuration.editionName.name(), databaseInfo.edition.toString() ) );
     }
 
-    public AuthManager createAuthManager( Config config, LogService logging,
-            FileSystemAbstraction fileSystem, JobScheduler jobScheduler )
+    public abstract void setupSecurityModule( PlatformModule platformModule, Procedures procedures );
+
+    public static void setupSecurityModule( PlatformModule platformModule, Log log, Procedures procedures,
+            String key )
     {
-        boolean authEnabled = config.get( GraphDatabaseSettings.auth_enabled );
-        if ( !authEnabled )
-        {
-            return getAuthDisabledAuthManager();
-        }
-
-        String configuredKey = config.get( GraphDatabaseSettings.auth_manager );
-        List<AuthManager.Factory> wantedAuthManagerFactories = new ArrayList<>();
-        List<AuthManager.Factory> backupAuthManagerFactories = new ArrayList<>();
-
-        for ( AuthManager.Factory candidate : Service.load( AuthManager.Factory.class ) )
-        {
-            if ( StreamSupport.stream( candidate.getKeys().spliterator(), false ).anyMatch( configuredKey::equals ) )
-            {
-                wantedAuthManagerFactories.add( candidate );
-            }
-            else
-            {
-                backupAuthManagerFactories.add( candidate );
-            }
-        }
-
-        AuthManager authManager = tryMakeInOrder( config, logging, fileSystem, jobScheduler, wantedAuthManagerFactories );
-
-        if ( authManager == null )
-        {
-            authManager = tryMakeInOrder( config, logging, fileSystem, jobScheduler, backupAuthManagerFactories );
-        }
-
-        if ( authManager == null )
-        {
-            logging.getUserLog( GraphDatabaseFacadeFactory.class )
-                    .error( "No auth manager implementation specified and no default could be loaded. " +
-                            "It is an illegal product configuration to have auth enabled and not provide an " +
-                            "auth manager service." );
-            throw new IllegalArgumentException(
-                    "Auth enabled but no auth manager found. This is an illegal product configuration." );
-        }
-
-        return authManager;
-    }
-
-    protected AuthManager getAuthDisabledAuthManager()
-    {
-        return AuthManager.NO_AUTH;
-    }
-
-    private AuthManager tryMakeInOrder( Config config, LogService logging, FileSystemAbstraction fileSystem,
-            JobScheduler jobScheduler, List<AuthManager.Factory> authManagerFactories  )
-    {
-        for ( AuthManager.Factory x : authManagerFactories )
-        {
-            try
-            {
-                return x.newInstance( config, logging.getUserLogProvider(), authManagerLog(),
-                        fileSystem, jobScheduler );
-            }
-            catch ( Exception e )
-            {
-                logging.getInternalLog( GraphDatabaseFacadeFactory.class )
-                        .warn( "Attempted to load configured auth manager with keys '%s', but failed",
-                                String.join( ", ", x.getKeys() ), e );
-            }
-        }
-        return null;
-    }
-
-    protected void registerProceduresFromProvider( String key, Procedures procedures ) throws KernelException
-    {
-        for ( ProceduresProvider candidate : Service.load( ProceduresProvider.class ) )
+        for ( SecurityModule candidate : Service.load( SecurityModule.class ) )
         {
             if ( candidate.matches( key ) )
             {
-                candidate.registerProcedures( procedures );
-                return;
+                try
+                {
+                    candidate.setup( new SecurityModule.Dependencies()
+                    {
+                        @Override
+                        public LogService logService()
+                        {
+                            return platformModule.logging;
+                        }
+
+                        @Override
+                        public Config config()
+                        {
+                            return platformModule.config;
+                        }
+
+                        @Override
+                        public Procedures procedures()
+                        {
+                            return procedures;
+                        }
+
+                        @Override
+                        public JobScheduler scheduler()
+                        {
+                            return platformModule.jobScheduler;
+                        }
+
+                        @Override
+                        public FileSystemAbstraction fileSystem()
+                        {
+                            return platformModule.fileSystem;
+                        }
+
+                        @Override
+                        public LifeSupport lifeSupport()
+                        {
+                            return platformModule.life;
+                        }
+
+                        @Override
+                        public DependencySatisfier dependencySatisfier()
+                        {
+                            return platformModule.dependencies;
+                        }
+                    } );
+                    return;
+                }
+                catch ( KernelException e )
+                {
+                    String errorMessage = "Failed to load security module.";
+                    log.error( errorMessage );
+                    throw new RuntimeException( errorMessage, e );
+                }
             }
         }
-        throw new ProcedureException( Status.Procedure.ProcedureRegistrationFailed, "No procedure provider found with the key '" + key + "'." );
+        String errorMessage = "Failed to load security module with key '" + key + "'.";
+        log.error( errorMessage );
+        throw new IllegalArgumentException( errorMessage );
     }
 
     protected BoltConnectionTracker createSessionTracker()

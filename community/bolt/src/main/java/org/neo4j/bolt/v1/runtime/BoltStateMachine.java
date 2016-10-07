@@ -31,6 +31,7 @@ import org.neo4j.bolt.v1.runtime.cypher.StatementMetadata;
 import org.neo4j.bolt.v1.runtime.cypher.StatementProcessor;
 import org.neo4j.bolt.v1.runtime.spi.BoltResult;
 import org.neo4j.function.ThrowingConsumer;
+import org.neo4j.graphdb.security.AuthExpirationException;
 import org.neo4j.kernel.api.bolt.ManagedBoltStateMachine;
 import org.neo4j.kernel.api.exceptions.KernelException;
 import org.neo4j.kernel.api.exceptions.Status;
@@ -263,24 +264,20 @@ public class BoltStateMachine implements AutoCloseable, ManagedBoltStateMachine
 
     public void close()
     {
-        if ( !ctx.closed )
+        try
         {
-            if ( onClose != null )
+            //Only run onClose, once
+            if ( !ctx.closed && onClose != null )
             {
                 onClose.run();
             }
-            try
-            {
-                ctx.statementProcessor.reset();
-            }
-            catch ( TransactionFailureException e )
-            {
-                throw new RuntimeException( e );
-            }
-            finally
-            {
-                ctx.closed = true;
-            }
+        }
+        finally
+        {
+            ctx.closed = true;
+            //However a new transaction may have been created
+            //so we must always to reset
+            reset();
         }
     }
 
@@ -366,13 +363,18 @@ public class BoltStateMachine implements AutoCloseable, ManagedBoltStateMachine
                 {
                     @Override
                     public State run( BoltStateMachine machine, String statement,
-                                      Map<String, Object> params )
+                                      Map<String, Object> params ) throws BoltConnectionFatality
                     {
                         try
                         {
                             StatementMetadata statementMetadata = machine.ctx.statementProcessor.run( statement, params );
                             machine.ctx.onMetadata( "fields", statementMetadata.fieldNames() );
                             return STREAMING;
+                        }
+                        catch ( AuthExpirationException e )
+                        {
+                            fail( machine, Neo4jError.from( e ) );
+                            throw new BoltConnectionAuthFatality( e.getMessage() );
                         }
                         catch ( Throwable e )
                         {
@@ -414,7 +416,7 @@ public class BoltStateMachine implements AutoCloseable, ManagedBoltStateMachine
                     }
 
                     @Override
-                    public State pullAll( BoltStateMachine machine )
+                    public State pullAll( BoltStateMachine machine ) throws BoltConnectionFatality
                     {
                         try
                         {
@@ -422,6 +424,11 @@ public class BoltStateMachine implements AutoCloseable, ManagedBoltStateMachine
                                     machine.ctx.responseHandler.onRecords( recordStream, true ) );
 
                             return READY;
+                        }
+                        catch ( AuthExpirationException e )
+                        {
+                            fail( machine, Neo4jError.from( e ) );
+                            throw new BoltConnectionAuthFatality( e.getMessage() );
                         }
                         catch ( Throwable e )
                         {
@@ -431,7 +438,7 @@ public class BoltStateMachine implements AutoCloseable, ManagedBoltStateMachine
                     }
 
                     @Override
-                    public State discardAll( BoltStateMachine machine )
+                    public State discardAll( BoltStateMachine machine ) throws BoltConnectionFatality
                     {
                         try
                         {
@@ -439,6 +446,11 @@ public class BoltStateMachine implements AutoCloseable, ManagedBoltStateMachine
                                     machine.ctx.responseHandler.onRecords( recordStream, false ) );
 
                             return READY;
+                        }
+                        catch ( AuthExpirationException e )
+                        {
+                            fail( machine, Neo4jError.from( e ) );
+                            throw new BoltConnectionAuthFatality( e.getMessage() );
                         }
                         catch ( Throwable e )
                         {
@@ -521,6 +533,13 @@ public class BoltStateMachine implements AutoCloseable, ManagedBoltStateMachine
                             return INTERRUPTED;
                         }
                         return resetMachine( machine );
+                    }
+
+                    @Override
+                    public State ackFailure( BoltStateMachine machine ) throws BoltConnectionFatality
+                    {
+                        machine.ctx.markIgnored();
+                        return INTERRUPTED;
                     }
 
                     @Override
@@ -612,7 +631,6 @@ public class BoltStateMachine implements AutoCloseable, ManagedBoltStateMachine
                 throw new BoltConnectionFatality( e.getMessage() );
             }
         }
-
     }
 
     private static void fail( BoltStateMachine machine, Neo4jError neo4jError )
@@ -623,6 +641,18 @@ public class BoltStateMachine implements AutoCloseable, ManagedBoltStateMachine
         }
 
         machine.ctx.markFailed( neo4jError );
+    }
+
+    private void reset()
+    {
+        try
+        {
+            ctx.statementProcessor.reset();
+        }
+        catch ( TransactionFailureException e )
+        {
+            throw new RuntimeException( e );
+        }
     }
 
     static class MutableConnectionState implements BoltResponseHandler

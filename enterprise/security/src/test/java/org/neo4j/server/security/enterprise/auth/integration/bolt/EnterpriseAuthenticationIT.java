@@ -19,6 +19,9 @@
  */
 package org.neo4j.server.security.enterprise.auth.integration.bolt;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.function.Consumer;
 
@@ -38,9 +41,19 @@ public class EnterpriseAuthenticationIT extends AuthenticationIT
     @Override
     protected Consumer<Map<String, String>> getSettingsFunction()
     {
+        final Path homeDir;
+        try
+        {
+            homeDir = Files.createTempDirectory( "logs" );
+        }
+        catch ( IOException e )
+        {
+            throw new RuntimeException( "Test setup failed to create temporary directory", e );
+        }
+
         return settings -> {
             settings.put( GraphDatabaseSettings.auth_enabled.name(), "true" );
-            settings.put( GraphDatabaseSettings.auth_manager.name(), "enterprise-auth-manager" );
+            settings.put( GraphDatabaseSettings.logs_directory.name(), homeDir.toAbsolutePath().toString() );
         };
     }
 

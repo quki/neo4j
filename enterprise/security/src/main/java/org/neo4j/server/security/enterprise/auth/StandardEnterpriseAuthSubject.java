@@ -23,10 +23,10 @@ import java.io.IOException;
 import java.util.Arrays;
 
 import org.neo4j.graphdb.security.AuthorizationViolationException;
+import org.neo4j.kernel.api.exceptions.InvalidArgumentsException;
 import org.neo4j.kernel.api.security.AccessMode;
 import org.neo4j.kernel.api.security.AuthSubject;
 import org.neo4j.kernel.api.security.AuthenticationResult;
-import org.neo4j.kernel.api.exceptions.InvalidArgumentsException;
 import org.neo4j.kernel.enterprise.api.security.EnterpriseAuthSubject;
 
 public class StandardEnterpriseAuthSubject implements EnterpriseAuthSubject
@@ -72,8 +72,13 @@ public class StandardEnterpriseAuthSubject implements EnterpriseAuthSubject
             throws IOException, InvalidArgumentsException
     {
         getUserManager().setUserPassword( (String) shiroSubject.getPrincipal(), password, requirePasswordChange );
-
         // Make user authenticated if successful
+        passwordChangeNoLongerRequired();
+    }
+
+    @Override
+    public void passwordChangeNoLongerRequired()
+    {
         if ( getAuthenticationResult() == AuthenticationResult.PASSWORD_CHANGE_REQUIRED )
         {
             shiroSubject.setAuthenticationResult( AuthenticationResult.SUCCESS );
@@ -96,12 +101,7 @@ public class StandardEnterpriseAuthSubject implements EnterpriseAuthSubject
 
     public EnterpriseUserManager getUserManager()
     {
-        return authManager.getUserManager();
-    }
-
-    public void clearAuthCache()
-    {
-        authManager.clearAuthCache();
+        return authManager.getUserManager( this );
     }
 
     @Override

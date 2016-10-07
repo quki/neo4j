@@ -25,18 +25,15 @@ import java.util.Map;
 import java.util.Set;
 
 import org.neo4j.graphdb.security.AuthorizationViolationException;
+import org.neo4j.kernel.api.exceptions.InvalidArgumentsException;
 import org.neo4j.kernel.api.security.AuthManager;
 import org.neo4j.kernel.api.security.AuthSubject;
 import org.neo4j.kernel.api.security.AuthToken;
 import org.neo4j.kernel.api.security.AuthenticationResult;
-import org.neo4j.kernel.api.exceptions.InvalidArgumentsException;
 import org.neo4j.kernel.api.security.exception.InvalidAuthTokenException;
 import org.neo4j.server.security.auth.exception.ConcurrentModificationException;
 
-import static org.neo4j.kernel.api.security.AuthToken.BASIC_SCHEME;
-import static org.neo4j.kernel.api.security.AuthToken.NATIVE_REALM;
-import static org.neo4j.kernel.api.security.AuthToken.REALM_KEY;
-import static org.neo4j.kernel.api.security.AuthToken.SCHEME_KEY;
+import static org.neo4j.server.security.auth.UserManager.INITIAL_USER_NAME;
 
 /**
  * Manages server authentication and authorization.
@@ -52,33 +49,47 @@ public class BasicAuthManager implements AuthManager, UserManager, UserManagerSu
     protected final AuthenticationStrategy authStrategy;
     protected final UserRepository userRepository;
     protected final PasswordPolicy passwordPolicy;
+    private final UserRepository initialUserRepository;
 
-    public BasicAuthManager( UserRepository userRepository, PasswordPolicy passwordPolicy, AuthenticationStrategy authStrategy )
+    public BasicAuthManager( UserRepository userRepository, PasswordPolicy passwordPolicy,
+            AuthenticationStrategy authStrategy, UserRepository initialUserRepository )
     {
         this.userRepository = userRepository;
         this.passwordPolicy = passwordPolicy;
         this.authStrategy = authStrategy;
+        this.initialUserRepository = initialUserRepository;
     }
 
-    public BasicAuthManager( UserRepository userRepository, PasswordPolicy passwordPolicy, Clock clock )
+    public BasicAuthManager( UserRepository userRepository, PasswordPolicy passwordPolicy, Clock clock,
+            UserRepository initialUserRepository )
     {
-        this( userRepository, passwordPolicy, new RateLimitedAuthenticationStrategy( clock, 3 ) );
+        this( userRepository, passwordPolicy, new RateLimitedAuthenticationStrategy( clock, 3 ), initialUserRepository );
     }
 
     @Override
     public void init() throws Throwable
     {
         userRepository.init();
+        initialUserRepository.init();
     }
 
     @Override
     public void start() throws Throwable
     {
         userRepository.start();
+        initialUserRepository.start();
 
         if ( userRepository.numberOfUsers() == 0 )
         {
-            newUser( "neo4j", "neo4j", true );
+            User neo4j = newUser( INITIAL_USER_NAME, "neo4j", true );
+            if ( initialUserRepository.numberOfUsers() > 0 )
+            {
+                User user = initialUserRepository.getUserByName( INITIAL_USER_NAME );
+                if ( user != null )
+                {
+                    userRepository.update( neo4j, user );
+                }
+            }
         }
     }
 
@@ -86,12 +97,14 @@ public class BasicAuthManager implements AuthManager, UserManager, UserManagerSu
     public void stop() throws Throwable
     {
         userRepository.stop();
+        initialUserRepository.stop();
     }
 
     @Override
     public void shutdown() throws Throwable
     {
         userRepository.shutdown();
+        initialUserRepository.shutdown();
     }
 
     @Override
@@ -155,6 +168,12 @@ public class BasicAuthManager implements AuthManager, UserManager, UserManagerSu
         return user;
     }
 
+    @Override
+    public User silentlyGetUser( String username )
+    {
+        return  userRepository.getUserByName( username );
+    }
+
     public void setPassword( AuthSubject authSubject, String username, String password, boolean requirePasswordChange )
             throws IOException, InvalidArgumentsException
     {
@@ -185,7 +204,7 @@ public class BasicAuthManager implements AuthManager, UserManager, UserManagerSu
         {
             User updatedUser = existingUser.augment()
                     .withCredentials( Credential.forPassword( password ) )
-                    .withRequiredPasswordChange( false )
+                    .withRequiredPasswordChange( requirePasswordChange )
                     .build();
             userRepository.update( existingUser, updatedUser );
         } catch ( ConcurrentModificationException e )
@@ -199,6 +218,12 @@ public class BasicAuthManager implements AuthManager, UserManager, UserManagerSu
     public Set<String> getAllUsernames()
     {
         return userRepository.getAllUsernames();
+    }
+
+    @Override
+    public UserManager getUserManager( AuthSubject authSubject )
+    {
+        return this;
     }
 
     @Override

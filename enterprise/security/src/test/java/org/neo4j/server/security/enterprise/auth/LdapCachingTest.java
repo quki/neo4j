@@ -41,7 +41,8 @@ import java.util.concurrent.TimeUnit;
 import org.neo4j.kernel.api.security.exception.InvalidAuthTokenException;
 import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.enterprise.api.security.EnterpriseAuthSubject;
-import org.neo4j.kernel.impl.enterprise.SecurityLog;
+import org.neo4j.server.security.enterprise.configuration.SecuritySettings;
+import org.neo4j.server.security.enterprise.log.SecurityLog;
 import org.neo4j.kernel.impl.util.JobScheduler;
 import org.neo4j.server.security.auth.BasicPasswordPolicy;
 import org.neo4j.server.security.auth.InMemoryUserRepository;
@@ -70,7 +71,8 @@ public class LdapCachingTest
                 new InMemoryRoleRepository(),
                 new BasicPasswordPolicy(),
                 new RateLimitedAuthenticationStrategy( Clock.systemUTC(), 3 ),
-                mock( JobScheduler.class )
+                mock( JobScheduler.class ),
+                new InMemoryUserRepository()
             );
 
         testRealm = new TestRealm( getLdapConfig(), securityLog );
@@ -90,8 +92,8 @@ public class LdapCachingTest
     private Config getLdapConfig()
     {
         return new Config( stringMap(
-                SecuritySettings.internal_authentication_enabled.name(), "false",
-                SecuritySettings.internal_authorization_enabled.name(), "false",
+                SecuritySettings.native_authentication_enabled.name(), "false",
+                SecuritySettings.native_authorization_enabled.name(), "false",
                 SecuritySettings.ldap_authentication_enabled.name(), "true",
                 SecuritySettings.ldap_authorization_enabled.name(), "true",
                 SecuritySettings.ldap_authorization_user_search_base.name(), "dc=example,dc=com",

@@ -19,26 +19,56 @@
  */
 package org.neo4j.server.security.enterprise.auth.integration.bolt;
 
+import org.apache.commons.lang3.StringUtils;
 import org.junit.Test;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
+import org.neo4j.bolt.v1.transport.integration.TransportTestUtil;
 import org.neo4j.graphdb.config.Setting;
-import org.neo4j.server.security.enterprise.auth.SecuritySettings;
+import org.neo4j.kernel.api.exceptions.Status;
+import org.neo4j.server.security.enterprise.configuration.SecuritySettings;
 import org.neo4j.server.security.enterprise.auth.plugin.TestCacheableAuthPlugin;
 import org.neo4j.server.security.enterprise.auth.plugin.TestCacheableAuthenticationPlugin;
 import org.neo4j.server.security.enterprise.auth.plugin.TestCustomCacheableAuthenticationPlugin;
 
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.neo4j.bolt.v1.messaging.message.PullAllMessage.pullAll;
+import static org.neo4j.bolt.v1.messaging.message.RunMessage.run;
+import static org.neo4j.bolt.v1.messaging.util.MessageMatchers.msgFailure;
+import static org.neo4j.bolt.v1.messaging.util.MessageMatchers.msgSuccess;
+import static org.neo4j.bolt.v1.transport.integration.TransportTestUtil.eventuallyReceives;
+import static org.neo4j.helpers.collection.MapUtil.map;
 
 public class PluginAuthenticationIT extends EnterpriseAuthenticationTestBase
 {
+    private static final List<String> defaultTestPluginRealmList = Arrays.asList(
+            "TestAuthenticationPlugin",
+            "TestAuthPlugin",
+            "TestCacheableAdminAuthPlugin",
+            "TestCacheableAuthenticationPlugin",
+            "TestCacheableAuthPlugin",
+            "TestCustomCacheableAuthenticationPlugin",
+            "TestCustomParametersAuthenticationPlugin"
+    );
+
+    private static final String DEFAULT_TEST_PLUGIN_REALMS = String.join( ", ",
+            defaultTestPluginRealmList.stream()
+                    .map( s -> StringUtils.prependIfMissing( s, SecuritySettings.PLUGIN_REALM_NAME_PREFIX ) )
+                    .collect( Collectors.toList() )
+    );
+
     @Override
     protected Consumer<Map<Setting<?>, String>> getSettingsFunction()
     {
-        return super.getSettingsFunction().andThen( pluginOnlyAuthSettings );
+        return super.getSettingsFunction().andThen( settings -> {
+            settings.put( SecuritySettings.active_realms, DEFAULT_TEST_PLUGIN_REALMS );
+        });
     }
 
     @Test
@@ -157,8 +187,54 @@ public class PluginAuthenticationIT extends EnterpriseAuthenticationTestBase
     @Test
     public void shouldAuthenticateAndAuthorizeWithTestCombinedAuthPlugin() throws Throwable
     {
+        restartNeo4jServerWithOverriddenSettings( settings -> {
+            settings.put( SecuritySettings.active_realms, "plugin-TestCombinedAuthPlugin" );
+        });
+
         assertConnectionSucceeds( authToken( "neo4j", "neo4j", "plugin-TestCombinedAuthPlugin" ) );
         assertReadSucceeds();
         assertWriteFails( "neo4j" );
+    }
+
+    @Test
+    public void shouldAuthenticateAndAuthorizeWithTwoSeparateTestPlugins() throws Throwable
+    {
+        restartNeo4jServerWithOverriddenSettings( settings -> {
+            settings.put( SecuritySettings.active_realms,
+                    "plugin-TestAuthenticationPlugin,plugin-TestAuthorizationPlugin" );
+        });
+
+        assertConnectionSucceeds( authToken( "neo4j", "neo4j", null ) );
+        assertReadSucceeds();
+        assertWriteFails( "neo4j" );
+    }
+
+    @Test
+    public void shouldFailIfAuthorizationExpiredWithAuthPlugin() throws Throwable
+    {
+        restartNeo4jServerWithOverriddenSettings( settings -> {
+            settings.put( SecuritySettings.active_realms, "plugin-TestCacheableAdminAuthPlugin" );
+        });
+
+        // Then
+        assertConnectionSucceeds( authToken( "neo4j", "neo4j", "plugin-TestCacheableAdminAuthPlugin" ) );
+
+        client.send( TransportTestUtil.chunk(
+                run( "CALL dbms.security.clearAuthCache() MATCH (n) RETURN n" ), pullAll() ) );
+
+        // Then
+        assertThat( client, eventuallyReceives( msgSuccess(),
+                msgFailure( Status.Security.AuthorizationExpired,
+                        "Plugin 'plugin-TestCacheableAdminAuthPlugin' authorization info expired." ) ) );
+    }
+
+    @Test
+    public void shouldAuthenticateWithTestCustomParametersAuthenticationPlugin() throws Throwable
+    {
+        assertConnectionSucceeds( map(
+                "scheme", "custom",
+                "principal", "neo4j",
+                "realm", "plugin-TestCustomParametersAuthenticationPlugin",
+                "parameters", map( "my_credentials", Arrays.asList( 1L, 2L, 3L, 4L ) ) ) );
     }
 }

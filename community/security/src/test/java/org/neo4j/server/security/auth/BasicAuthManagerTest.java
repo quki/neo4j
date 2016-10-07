@@ -25,12 +25,13 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
-import java.io.IOException;
-
+import org.neo4j.kernel.api.exceptions.InvalidArgumentsException;
+import org.neo4j.kernel.api.security.AuthManager;
 import org.neo4j.kernel.api.security.AuthSubject;
 import org.neo4j.kernel.api.security.AuthenticationResult;
-import org.neo4j.kernel.api.exceptions.InvalidArgumentsException;
 import org.neo4j.kernel.api.security.exception.InvalidAuthTokenException;
+import org.neo4j.kernel.configuration.Config;
+import org.neo4j.logging.NullLogProvider;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
@@ -41,21 +42,26 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
-import static org.neo4j.kernel.api.security.AuthenticationResult.*;
+import static org.neo4j.kernel.api.security.AuthenticationResult.FAILURE;
+import static org.neo4j.kernel.api.security.AuthenticationResult.PASSWORD_CHANGE_REQUIRED;
+import static org.neo4j.kernel.api.security.AuthenticationResult.SUCCESS;
+import static org.neo4j.kernel.api.security.AuthenticationResult.TOO_MANY_ATTEMPTS;
 import static org.neo4j.server.security.auth.SecurityTestUtils.authToken;
 
-public class BasicAuthManagerTest
+public class BasicAuthManagerTest extends InitialUserTests
 {
-    private InMemoryUserRepository users;
     private BasicAuthManager manager;
-    private AuthenticationStrategy authStrategy = mock( AuthenticationStrategy.class );;
+    private AuthenticationStrategy authStrategy = mock( AuthenticationStrategy.class );
 
     @Before
     public void setup() throws Throwable
     {
-        users = new InMemoryUserRepository();
-        manager = new BasicAuthManager( users, mock( PasswordPolicy.class ), authStrategy );
-        manager.start();
+        config = Config.defaults();
+        users = CommunitySecurityModule.getUserRepository( config, NullLogProvider.getInstance(), fsRule.get() );
+        UserRepository initUserRepository =
+                CommunitySecurityModule.getInitialUserRepository( config, NullLogProvider.getInstance(), fsRule.get() );
+        manager = new BasicAuthManager( users, mock( PasswordPolicy.class ), authStrategy, initUserRepository );
+        manager.init();
     }
 
     @After
@@ -65,22 +71,13 @@ public class BasicAuthManagerTest
     }
 
     @Test
-    public void shouldCreateDefaultUserIfNoneExist()
-    {
-        // When
-        final User user = users.getUserByName( "neo4j" );
-
-        // Then
-        assertNotNull( user );
-        assertTrue( user.credentials().matchesPassword( "neo4j" ) );
-        assertTrue( user.passwordChangeRequired() );
-    }
-
-    @Test
     public void shouldFindAndAuthenticateUserSuccessfully() throws Throwable
     {
         // Given
-        final User user = createUser( "jake", "abc123", false );
+        manager.start();
+        User user1 = newUser( "jake", "abc123", false );
+        users.create( user1 );
+        final User user = user1;
 
         // When
         when( authStrategy.authenticate( user, "abc123" )).thenReturn( SUCCESS );
@@ -93,7 +90,10 @@ public class BasicAuthManagerTest
     public void shouldFindAndAuthenticateUserAndReturnAuthStrategyResult() throws Throwable
     {
         // Given
-        final User user = createUser( "jake", "abc123", true );
+        manager.start();
+        User user1 = newUser( "jake", "abc123", true );
+        users.create( user1 );
+        final User user = user1;
 
         // When
         when( authStrategy.authenticate( user, "abc123" )).thenReturn( TOO_MANY_ATTEMPTS );
@@ -106,7 +106,10 @@ public class BasicAuthManagerTest
     public void shouldFindAndAuthenticateUserAndReturnPasswordChangeIfRequired() throws Throwable
     {
         // Given
-        final User user = createUser( "jake", "abc123", true );
+        manager.start();
+        User user1 = newUser( "jake", "abc123", true );
+        users.create( user1 );
+        final User user = user1;
 
         // When
         when( authStrategy.authenticate( user, "abc123" )).thenReturn( SUCCESS );
@@ -119,7 +122,9 @@ public class BasicAuthManagerTest
     public void shouldFailAuthenticationIfUserIsNotFound() throws Throwable
     {
         // Given
-        createUser( "jake", "abc123", true );
+        manager.start();
+        User user = newUser( "jake", "abc123", true );
+        users.create( user );
 
         // Then
         assertLoginGivesResult( "unknown", "abc123", FAILURE );
@@ -128,6 +133,9 @@ public class BasicAuthManagerTest
     @Test
     public void shouldCreateUser() throws Throwable
     {
+        // Given
+        manager.start();
+
         // When
         manager.newUser( "foo", "bar", true );
 
@@ -142,6 +150,7 @@ public class BasicAuthManagerTest
     public void shouldDeleteUser() throws Throwable
     {
         // Given
+        manager.start();
         manager.newUser( "jake", "abc123", true );
 
         // When
@@ -155,6 +164,7 @@ public class BasicAuthManagerTest
     public void shouldFailToDeleteUnknownUser() throws Throwable
     {
         // Given
+        manager.start();
         manager.newUser( "jake", "abc123", true );
 
         try
@@ -180,6 +190,7 @@ public class BasicAuthManagerTest
     public void shouldSetPassword() throws Throwable
     {
         // Given
+        manager.start();
         manager.newUser( "jake", "abc123", true );
 
         // When
@@ -194,6 +205,9 @@ public class BasicAuthManagerTest
     @Test
     public void shouldReturnNullWhenSettingPasswordForUnknownUser() throws Throwable
     {
+        // Given
+        manager.start();
+
         // When
         try
         {
@@ -206,19 +220,16 @@ public class BasicAuthManagerTest
         }
     }
 
-    private User createUser( String username, String password, boolean pwd_change )
-            throws IOException, InvalidArgumentsException
-    {
-        User user = new User.Builder( username, Credential.forPassword( password ))
-            .withRequiredPasswordChange( pwd_change ).build();
-        users.create(user);
-        return user;
-    }
-
     private void assertLoginGivesResult( String username, String password, AuthenticationResult expectedResult )
             throws InvalidAuthTokenException
     {
         AuthSubject authSubject = manager.login( authToken( username, password ) );
         assertThat( authSubject.getAuthenticationResult(), equalTo( expectedResult ) );
+    }
+
+    @Override
+    protected AuthManager authManager()
+    {
+        return manager;
     }
 }

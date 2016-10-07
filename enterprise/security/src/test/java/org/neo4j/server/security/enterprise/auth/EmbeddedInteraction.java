@@ -65,20 +65,18 @@ public class EmbeddedInteraction implements NeoInteractionLevel<EnterpriseAuthSu
 
     private void init( GraphDatabaseBuilder builder, Map<String, String> config ) throws Throwable
     {
+        builder.setConfig( boltConnector( "0" ).type, "BOLT" );
         builder.setConfig( boltConnector( "0" ).enabled, "true" );
         builder.setConfig( boltConnector( "0" ).encryption_level, OPTIONAL.name() );
         builder.setConfig( BoltKernelExtension.Settings.tls_key_file, NeoInteractionLevel.tempPath( "key", ".key" ) );
         builder.setConfig( BoltKernelExtension.Settings.tls_certificate_file,
                 NeoInteractionLevel.tempPath( "cert", ".cert" ) );
         builder.setConfig( GraphDatabaseSettings.auth_enabled, "true" );
-        builder.setConfig( GraphDatabaseSettings.auth_manager, "enterprise-auth-manager" );
 
         builder.setConfig( config );
 
         db = (GraphDatabaseFacade) builder.newGraphDatabase();
         authManager = db.getDependencyResolver().resolveDependency( EnterpriseAuthManager.class );
-        authManager.init();
-        authManager.start();
     }
 
     @Override
@@ -150,8 +148,6 @@ public class EmbeddedInteraction implements NeoInteractionLevel<EnterpriseAuthSu
     @Override
     public void tearDown() throws Throwable
     {
-        authManager.stop();
-        authManager.shutdown();
         db.shutdown();
     }
 

@@ -19,16 +19,16 @@
  */
 package org.neo4j.server.security.enterprise.auth.plugin;
 
-import java.util.Map;
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.neo4j.kernel.api.security.AuthToken;
+import org.neo4j.server.security.enterprise.auth.plugin.api.AuthToken;
 import org.neo4j.server.security.enterprise.auth.plugin.api.RealmOperations;
 import org.neo4j.server.security.enterprise.auth.plugin.spi.AuthenticationInfo;
 import org.neo4j.server.security.enterprise.auth.plugin.spi.AuthenticationPlugin;
 import org.neo4j.server.security.enterprise.auth.plugin.spi.CustomCacheableAuthenticationInfo;
 
-public class TestCustomCacheableAuthenticationPlugin implements AuthenticationPlugin
+public class TestCustomCacheableAuthenticationPlugin extends AuthenticationPlugin.CachingEnabledAdapter
 {
     @Override
     public String name()
@@ -37,43 +37,22 @@ public class TestCustomCacheableAuthenticationPlugin implements AuthenticationPl
     }
 
     @Override
-    public AuthenticationInfo authenticate( Map<String,Object> authToken )
+    public AuthenticationInfo authenticate( AuthToken authToken )
     {
         getAuthenticationInfoCallCount.incrementAndGet();
 
-        String principal = (String) authToken.get( AuthToken.PRINCIPAL );
-        String credentials = (String) authToken.get( AuthToken.CREDENTIALS );
+        String principal = authToken.principal();
+        char[] credentials = authToken.credentials();
 
-        if ( principal.equals( "neo4j" ) && credentials.equals( "neo4j" ) )
+        if ( principal.equals( "neo4j" ) && Arrays.equals( credentials, "neo4j".toCharArray() ) )
         {
             return CustomCacheableAuthenticationInfo.of( "neo4j",
                     ( token ) -> {
-                        String tokenCredentials = (String) token.get( AuthToken.CREDENTIALS );
-                        return tokenCredentials.equals( "neo4j" );
+                        char[] tokenCredentials = token.credentials();
+                        return Arrays.equals( tokenCredentials, "neo4j".toCharArray() );
                     } );
         }
         return null;
-    }
-
-    @Override
-    public void initialize( RealmOperations realmOperations ) throws Throwable
-    {
-        realmOperations.setAuthenticationCachingEnabled( true );
-    }
-
-    @Override
-    public void start() throws Throwable
-    {
-    }
-
-    @Override
-    public void stop() throws Throwable
-    {
-    }
-
-    @Override
-    public void shutdown() throws Throwable
-    {
     }
 
     // For testing purposes

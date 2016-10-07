@@ -27,19 +27,22 @@ import org.junit.Test;
 import java.util.Collections;
 
 import org.neo4j.kernel.api.exceptions.InvalidArgumentsException;
+import org.neo4j.kernel.api.security.AuthManager;
 import org.neo4j.kernel.api.security.AuthSubject;
 import org.neo4j.kernel.api.security.AuthToken;
 import org.neo4j.kernel.api.security.AuthenticationResult;
 import org.neo4j.kernel.api.security.exception.InvalidAuthTokenException;
-import org.neo4j.kernel.impl.enterprise.SecurityLog;
+import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.impl.util.JobScheduler;
 import org.neo4j.logging.AssertableLogProvider;
 import org.neo4j.logging.Log;
+import org.neo4j.logging.NullLogProvider;
 import org.neo4j.server.security.auth.AuthenticationStrategy;
-import org.neo4j.server.security.auth.Credential;
-import org.neo4j.server.security.auth.InMemoryUserRepository;
+import org.neo4j.server.security.auth.CommunitySecurityModule;
+import org.neo4j.server.security.auth.InitialUserTests;
 import org.neo4j.server.security.auth.PasswordPolicy;
 import org.neo4j.server.security.auth.User;
+import org.neo4j.server.security.enterprise.log.SecurityLog;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
@@ -57,11 +60,8 @@ import static org.neo4j.logging.AssertableLogProvider.inLog;
 import static org.neo4j.server.security.auth.SecurityTestUtils.authToken;
 import static org.neo4j.test.assertion.Assert.assertException;
 
-public class MultiRealmAuthManagerTest
+public class MultiRealmAuthManagerTest extends InitialUserTests
 {
-    private InMemoryUserRepository users;
-    private InMemoryRoleRepository roles;
-    private PasswordPolicy passwordPolicy;
     private AuthenticationStrategy authStrategy;
     private MultiRealmAuthManager manager;
     private EnterpriseUserManager userManager;
@@ -70,24 +70,29 @@ public class MultiRealmAuthManagerTest
     @Before
     public void setUp() throws Throwable
     {
-        users = new InMemoryUserRepository();
-        roles = new InMemoryRoleRepository();
-        passwordPolicy = mock( PasswordPolicy.class );
+        config = Config.defaults();
+        users = CommunitySecurityModule.getUserRepository( config, NullLogProvider.getInstance(), fsRule.get() );
         authStrategy = mock( AuthenticationStrategy.class );
         logProvider = new AssertableLogProvider();
 
-        manager = createAuthManager( roles, passwordPolicy, true );
+        manager = createAuthManager( true );
         userManager = manager.getUserManager();
     }
 
-    private MultiRealmAuthManager createAuthManager( InMemoryRoleRepository roles, PasswordPolicy passwordPolicy, boolean
-            logSuccessfulAuthentications ) throws Throwable
+    private MultiRealmAuthManager createAuthManager( boolean logSuccessfulAuthentications ) throws Throwable
     {
         Log log = logProvider.getLog( this.getClass() );
 
         InternalFlatFileRealm internalFlatFileRealm =
-                new InternalFlatFileRealm( users, new InMemoryRoleRepository(), mock( PasswordPolicy.class ),
-                        authStrategy, mock( JobScheduler.class ) );
+                new InternalFlatFileRealm(
+                        users,
+                        new InMemoryRoleRepository(),
+                        mock( PasswordPolicy.class ),
+                        authStrategy,
+                        mock( JobScheduler.class ),
+                        CommunitySecurityModule.getInitialUserRepository(
+                                config, NullLogProvider.getInstance(), fsRule.get() )
+                    );
 
         manager = new MultiRealmAuthManager( internalFlatFileRealm, Collections.singleton( internalFlatFileRealm ),
                 new MemoryConstrainedCacheManager(), new SecurityLog( log ), logSuccessfulAuthentications );
@@ -101,21 +106,6 @@ public class MultiRealmAuthManagerTest
     {
         manager.stop();
         manager.shutdown();
-    }
-
-    @Test
-    public void shouldCreateDefaultUserIfNoneExist() throws Throwable
-    {
-        // Given
-
-        // When
-        manager.start();
-
-        // Then
-        final User user = users.getUserByName( "neo4j" );
-        assertNotNull( user );
-        assertTrue( user.credentials().matchesPassword( "neo4j" ) );
-        assertTrue( user.passwordChangeRequired() );
     }
 
     @Test
@@ -139,7 +129,7 @@ public class MultiRealmAuthManagerTest
     {
         // Given
         manager.shutdown();
-        manager = createAuthManager( roles, passwordPolicy, false );
+        manager = createAuthManager( false );
 
         users.create( newUser( "jake", "abc123" , false ) );
         manager.start();
@@ -432,6 +422,7 @@ public class MultiRealmAuthManagerTest
         assertThat( authSubject.getAuthenticationResult(), equalTo( AuthenticationResult.SUCCESS ) );
         logProvider.assertExactly(
                 info( "[neo]: logged in" ),
+                info( "[neo]: changed password%s", "" ),
                 info( "[neo]: logged in" ) );
     }
 
@@ -629,16 +620,15 @@ public class MultiRealmAuthManagerTest
         return inLog( this.getClass() ).error( message, (Object[]) arguments );
     }
 
-    private User newUser( String userName, String password, boolean pwdChange )
-    {
-        return new User.Builder( userName, Credential.forPassword( password ))
-                    .withRequiredPasswordChange( pwdChange )
-                    .build();
-    }
-
     private void setMockAuthenticationStrategyResult( String username, String password, AuthenticationResult result )
     {
         final User user = users.getUserByName( username );
         when( authStrategy.authenticate( user, password ) ).thenReturn( result );
+    }
+
+    @Override
+    protected AuthManager authManager()
+    {
+        return manager;
     }
 }

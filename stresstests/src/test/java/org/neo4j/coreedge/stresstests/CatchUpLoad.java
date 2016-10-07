@@ -21,10 +21,13 @@ package org.neo4j.coreedge.stresstests;
 
 import io.netty.channel.Channel;
 
+import java.io.IOException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import org.neo4j.coreedge.catchup.CatchUpClient;
 import org.neo4j.coreedge.discovery.Cluster;
@@ -33,12 +36,15 @@ import org.neo4j.coreedge.discovery.CoreClusterMember;
 import org.neo4j.coreedge.discovery.EdgeClusterMember;
 import org.neo4j.coreedge.handlers.ExceptionMonitoringHandler;
 import org.neo4j.kernel.impl.transaction.log.TransactionIdStore;
+import org.neo4j.kernel.impl.util.UnsatisfiedDependencyException;
+import org.neo4j.kernel.internal.GraphDatabaseAPI;
 import org.neo4j.kernel.monitoring.Monitors;
 
 import static org.neo4j.function.Predicates.await;
 
 class CatchUpLoad extends RepeatUntilCallable
 {
+    private static final IllegalStateException databaseShutdownEx = new IllegalStateException( "database is shutdown" );
     private Cluster cluster;
 
     CatchUpLoad( BooleanSupplier keepGoing, Runnable onFailure, Cluster cluster )
@@ -48,7 +54,7 @@ class CatchUpLoad extends RepeatUntilCallable
     }
 
     @Override
-    protected boolean doWork()
+    protected void doWork()
     {
         CoreClusterMember leader;
         try
@@ -58,58 +64,161 @@ class CatchUpLoad extends RepeatUntilCallable
         catch ( TimeoutException e )
         {
             // whatever... we'll try again
-            return true;
+            return;
         }
 
-        long txIdBeforeStartingNewEdge = txId( leader );
+        long txIdBeforeStartingNewEdge = txId( leader, false );
+        if ( txIdBeforeStartingNewEdge < TransactionIdStore.BASE_TX_ID )
+        {
+            // leader has been shut down, let's try again later
+            return;
+        }
         int newMemberId = cluster.edgeMembers().size();
         final EdgeClusterMember edgeClusterMember = cluster.addEdgeMemberWithId( newMemberId );
 
-        AtomicReference<Throwable> exception;
+        Throwable ex = null;
+        Supplier<Throwable> monitoredException = null;
         try
         {
-            exception = startAndRegisterExceptionMonitor( edgeClusterMember );
-            await( () -> txIdBeforeStartingNewEdge <= txId( edgeClusterMember ), 3, TimeUnit.MINUTES );
+            monitoredException = startAndRegisterExceptionMonitor( edgeClusterMember );
+            await( () -> txIdBeforeStartingNewEdge <= txId( edgeClusterMember, true ), 3, TimeUnit.MINUTES );
         }
-        catch ( Exception e )
+        catch ( Throwable e )
         {
-            throw new RuntimeException( e );
+            ex = e;
         }
         finally
         {
-            cluster.removeEdgeMemberWithMemberId( newMemberId );
+            try
+            {
+                cluster.removeEdgeMemberWithMemberId( newMemberId );
+            }
+            catch ( Throwable e )
+            {
+                ex = exception( ex, e );
+            }
         }
 
-        if ( exception.get() != null )
+        if ( monitoredException != null && monitoredException.get() != null )
         {
-            throw new RuntimeException( exception.get() );
+            throw new RuntimeException( exception( monitoredException.get(), ex ) );
         }
 
-        return true;
+        if ( ex != null )
+        {
+            throw new RuntimeException( ex );
+        }
     }
 
-    private AtomicReference<Throwable> startAndRegisterExceptionMonitor( EdgeClusterMember edgeClusterMember )
+    private Throwable exception( Throwable outer, Throwable inner )
+    {
+        if ( outer == null )
+        {
+            assert inner != null;
+            return inner;
+        }
+
+        if ( inner != null )
+        {
+            outer.addSuppressed( inner );
+        }
+
+        return outer;
+    }
+
+    private Supplier<Throwable> startAndRegisterExceptionMonitor( EdgeClusterMember edgeClusterMember )
     {
         edgeClusterMember.start();
 
         // the database is create when starting the edge...
         final Monitors monitors =
                 edgeClusterMember.database().getDependencyResolver().resolveDependency( Monitors.class );
-        AtomicReference<Throwable> exception = new AtomicReference<>();
-        monitors.addMonitorListener( new ExceptionMonitoringHandler.Monitor()
+        ExceptionMonitor exceptionMonitor = new ExceptionMonitor( new ConnectionResetFilter() );
+        monitors.addMonitorListener( exceptionMonitor, CatchUpClient.class.getName() );
+        return exceptionMonitor;
+    }
+
+    private long txId( ClusterMember member, boolean fail )
+    {
+        GraphDatabaseAPI database = member.database();
+        if ( database == null )
         {
-            @Override
-            public void exceptionCaught( Channel channel, Throwable cause )
+            return errorValueOrThrow( fail, databaseShutdownEx );
+        }
+
+        try
+        {
+            return database.getDependencyResolver().resolveDependency( TransactionIdStore.class )
+                    .getLastClosedTransactionId();
+        }
+        catch ( IllegalStateException | UnsatisfiedDependencyException ex )
+        {
+            return errorValueOrThrow( !isStoreClosed( ex ) || fail, ex );
+        }
+    }
+
+    private long errorValueOrThrow( boolean fail, RuntimeException error )
+    {
+        if ( fail )
+        {
+            throw error;
+        }
+        else
+        {
+            return -1;
+        }
+    }
+
+    private boolean isStoreClosed( RuntimeException ex )
+    {
+        if ( ex instanceof UnsatisfiedDependencyException )
+        {
+            return true;
+        }
+
+        if ( !(ex instanceof IllegalStateException) )
+        {
+            return false;
+        }
+
+        String message = ex.getMessage();
+        return message.startsWith( "MetaDataStore for file " ) && message.endsWith( " is closed" );
+    }
+
+    private static class ConnectionResetFilter implements Predicate<Throwable>
+    {
+        private static final String MSG = "Connection reset by peer";
+
+        @Override
+        public boolean test( Throwable throwable )
+        {
+            return (throwable instanceof IOException) && MSG.equals( throwable.getMessage() );
+        }
+    }
+
+    private static class ExceptionMonitor implements ExceptionMonitoringHandler.Monitor, Supplier<Throwable>
+    {
+        private final AtomicReference<Throwable> exception = new AtomicReference<>();
+        private Predicate<Throwable> reject;
+
+        ExceptionMonitor( Predicate<Throwable> reject )
+        {
+            this.reject = reject;
+        }
+
+        @Override
+        public void exceptionCaught( Channel channel, Throwable cause )
+        {
+            if ( !reject.test( cause ) )
             {
                 exception.set( cause );
             }
-        }, CatchUpClient.class.getName() );
-        return exception;
-    }
+        }
 
-    private long txId( ClusterMember leader )
-    {
-        return leader.database().getDependencyResolver().resolveDependency( TransactionIdStore.class )
-                .getLastClosedTransactionId();
+        @Override
+        public Throwable get()
+        {
+            return exception.get();
+        }
     }
 }

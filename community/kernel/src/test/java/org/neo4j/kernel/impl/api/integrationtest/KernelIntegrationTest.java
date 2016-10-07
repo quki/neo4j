@@ -27,6 +27,7 @@ import org.neo4j.graphdb.mockfs.EphemeralFileSystemAbstraction;
 import org.neo4j.kernel.api.DataWriteOperations;
 import org.neo4j.kernel.api.KernelAPI;
 import org.neo4j.kernel.api.KernelTransaction;
+import org.neo4j.kernel.api.ProcedureCallOperations;
 import org.neo4j.kernel.api.ReadOperations;
 import org.neo4j.kernel.api.SchemaWriteOperations;
 import org.neo4j.kernel.api.Statement;
@@ -52,7 +53,7 @@ public abstract class KernelIntegrationTest
     private KernelTransaction transaction;
     private Statement statement;
     private EphemeralFileSystemAbstraction fs;
-    private DbmsOperations.Factory dbmsOperationsFactory;
+    private DbmsOperations dbmsOperations;
 
     protected TokenWriteOperations tokenWriteOperationsInNewTransaction() throws KernelException
     {
@@ -75,6 +76,13 @@ public abstract class KernelIntegrationTest
         return statement.schemaWriteOperations();
     }
 
+    protected ProcedureCallOperations procedureCallOpsInNewTx() throws TransactionFailureException
+    {
+        transaction = kernel.newTransaction( KernelTransaction.Type.implicit, AccessMode.Static.READ );
+        statement = transaction.acquireStatement();
+        return statement.procedureCallOperations();
+    }
+
     protected ReadOperations readOperationsInNewTransaction() throws TransactionFailureException
     {
         transaction = kernel.newTransaction( KernelTransaction.Type.implicit, AccessMode.Static.READ );
@@ -82,11 +90,9 @@ public abstract class KernelIntegrationTest
         return statement.readOperations();
     }
 
-    protected DbmsOperations dbmsOperations( AccessMode accessMode ) throws TransactionFailureException
+    protected DbmsOperations dbmsOperations()
     {
-        transaction = kernel.newTransaction( KernelTransaction.Type.implicit, accessMode );
-        statement = transaction.acquireStatement();
-        return dbmsOperationsFactory.newInstance( transaction );
+        return dbmsOperations;
     }
 
     protected void commit() throws TransactionFailureException
@@ -139,15 +145,20 @@ public abstract class KernelIntegrationTest
         kernel = db.getDependencyResolver().resolveDependency( KernelAPI.class );
         indexingService = db.getDependencyResolver().resolveDependency( IndexingService.class );
         statementContextSupplier = db.getDependencyResolver().resolveDependency( ThreadToStatementContextBridge.class );
-        dbmsOperationsFactory = db.getDependencyResolver().resolveDependency( DbmsOperations.Factory.class );
+        dbmsOperations = db.getDependencyResolver().resolveDependency( DbmsOperations.class );
     }
 
     protected GraphDatabaseService createGraphDatabase( EphemeralFileSystemAbstraction fs )
     {
-        TestGraphDatabaseBuilder graphDatabaseFactory = (TestGraphDatabaseBuilder) new TestGraphDatabaseFactory()
+        TestGraphDatabaseBuilder graphDatabaseBuilder = (TestGraphDatabaseBuilder) new TestGraphDatabaseFactory()
                 .setFileSystem( fs )
                 .newImpermanentDatabaseBuilder();
-        return graphDatabaseFactory.newGraphDatabase();
+        return configure( graphDatabaseBuilder ).newGraphDatabase();
+    }
+
+    protected TestGraphDatabaseBuilder configure( TestGraphDatabaseBuilder graphDatabaseBuilder )
+    {
+        return graphDatabaseBuilder;
     }
 
     protected void dbWithNoCache() throws TransactionFailureException

@@ -48,9 +48,9 @@ public class CoreEdgeClusterSettings
     public static final Setting<Long> join_catch_up_timeout =
             setting( "core_edge.join_catch_up_timeout", DURATION, "10m" );
 
-    @Description("The time limit which a new leader election will occur if no messages are received.")
+    @Description("The time limit within which a new leader election will occur if no messages are received.")
     public static final Setting<Long> leader_election_timeout =
-            setting( "core_edge.leader_election_timeout", DURATION, "500ms" );
+            setting( "core_edge.leader_election_timeout", DURATION, "7s" );
 
     @Description("The maximum batch size when catching up (in unit of entries)")
     public static final Setting<Integer> catchup_batch_size =
@@ -69,14 +69,6 @@ public class CoreEdgeClusterSettings
     @Internal
     public static final Setting<Integer> raft_in_queue_max_batch =
             setting( "core_edge.raft_in_queue_max_batch", INTEGER, "64" );
-
-    @Description("Time out for a token to be replicated")
-    public static final Setting<Long> token_creation_timeout =
-            setting( "core_edge.token_creation_timeout", DURATION, "1s" );
-
-    @Description("Time out waiting for the leader locking token")
-    public static final Setting<Long> leader_lock_token_timeout =
-            setting( "core_edge.leader_lock_token_timeout", DURATION, "1s" );
 
     @Description("Expected number of Core machines in the cluster")
     public static final Setting<Integer> expected_core_cluster_size =
@@ -146,15 +138,15 @@ public class CoreEdgeClusterSettings
 
     @Description("The number of operations to be processed before the state machines flush to disk")
     public static final Setting<Integer> state_machine_flush_window_size =
-            setting( "core_edge.state_machine_flush_window_size", INTEGER, "100" );
+            setting( "core_edge.state_machine_flush_window_size", INTEGER, "4096" );
 
     @Description("The maximum number of operations to be batched during applications of operations in the state machines")
-    public static Setting<Integer> state_machine_apply_max_batch_size =
+    public static final Setting<Integer> state_machine_apply_max_batch_size =
             setting( "core_edge.state_machine_apply_max_batch_size", INTEGER, "16" );
 
     @Description( "RAFT log pruning strategy" )
     public static final Setting<String> raft_log_pruning_strategy =
-            setting( "core_edge.raft_log_prune_strategy", STRING, "keep_all" );
+            setting( "core_edge.raft_log_prune_strategy", STRING, "1g size" );
 
     @Description( "RAFT log implementation" )
     public static final Setting<String> raft_log_implementation =
@@ -162,7 +154,7 @@ public class CoreEdgeClusterSettings
 
     @Description( "RAFT log rotation size" )
     public static final Setting<Long> raft_log_rotation_size =
-            setting( "core_edge.raft_log_rotation_size", BYTES, "1M", min( 1024L ) );
+            setting( "core_edge.raft_log_rotation_size", BYTES, "250M", min( 1024L ) );
 
     @Description( "RAFT log reader pool size" )
     public static final Setting<Integer> raft_log_reader_pool_size =
@@ -174,7 +166,7 @@ public class CoreEdgeClusterSettings
 
     @Description("Enable or disable the dump of all network messages pertaining to the RAFT protocol")
     public static final Setting<Boolean> raft_messages_log_enable =
-            setting( "core_edge.raft_messages_log_enable", BOOLEAN, "true");
+            setting( "core_edge.raft_messages_log_enable", BOOLEAN, "false");
 
     @Description( "Interval of pulling updates from cores." )
     public static final Setting<Long> pull_interval = setting( "core_edge.pull_interval", DURATION, "1s" );
@@ -259,4 +251,8 @@ public class CoreEdgeClusterSettings
     @Description( "RELATIONSHIP_GROUP ID Allocation Space Size" )
     public static final Setting<Integer> relationship_group_id_allocation_size =
             setting( "core_edge.relationship_group_id_allocation_size", INTEGER, "1024" );
+
+    @Description( "Time between scanning the cluster to refresh current server's view of topology" )
+    public static final Setting<Long> cluster_topology_refresh =
+            setting( "core_edge.cluster_topology_refresh", DURATION, "1m", min(1_000L) );
 }

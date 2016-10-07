@@ -40,9 +40,10 @@ import static java.lang.Integer.parseInt;
 import static java.lang.Long.parseLong;
 import static java.lang.System.getProperty;
 import static java.util.Collections.emptyMap;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertNull;
 import static org.neo4j.StressTestingHelper.ensureExistsAndEmpty;
 import static org.neo4j.StressTestingHelper.fromEnv;
+import static org.neo4j.StressTestingHelper.prettyPrintStackTrace;
 import static org.neo4j.coreedge.stresstests.ClusterConfiguration.configureRaftLogRotationAndPruning;
 import static org.neo4j.coreedge.stresstests.ClusterConfiguration.configureTxLogRotationAndPruning;
 import static org.neo4j.function.Suppliers.untilTimeExpired;
@@ -50,7 +51,6 @@ import static org.neo4j.function.Suppliers.untilTimeExpired;
 public class CatchupStoreCopyInteractionStressTesting
 {
     private static final String DEFAULT_NUMBER_OF_CORES = "3";
-    private static final String DEFAULT_NUMBER_OF_EDGES = "1";
     private static final String DEFAULT_DURATION_IN_MINUTES = "30";
     private static final String DEFAULT_WORKING_DIR = new File( getProperty( "java.io.tmpdir" ) ).getPath();
 
@@ -59,8 +59,6 @@ public class CatchupStoreCopyInteractionStressTesting
     {
         int numberOfCores =
                 parseInt( fromEnv( "CATCHUP_STORE_COPY_INTERACTION_STRESS_NUMBER_OF_CORES", DEFAULT_NUMBER_OF_CORES ) );
-        int numberOfEdges =
-                parseInt( fromEnv( "CATCHUP_STORE_COPY_INTERACTION_STRESS_NUMBER_OF_EDGES", DEFAULT_NUMBER_OF_EDGES ) );
         long durationInMinutes =
                 parseLong( fromEnv( "CATCHUP_STORE_COPY_INTERACTION_STRESS_DURATION", DEFAULT_DURATION_IN_MINUTES ) );
         String workingDirectory =
@@ -70,29 +68,28 @@ public class CatchupStoreCopyInteractionStressTesting
 
         Map<String,String> coreParams =
                 configureRaftLogRotationAndPruning( configureTxLogRotationAndPruning( new HashMap<>() ) );
-        Map<String,String> edgeParams = configureTxLogRotationAndPruning( new HashMap<>() );
 
         HazelcastDiscoveryServiceFactory discoveryServiceFactory = new HazelcastDiscoveryServiceFactory();
         Cluster cluster =
-                new Cluster( clusterDirectory, numberOfCores, numberOfEdges, discoveryServiceFactory, coreParams,
-                        emptyMap(), edgeParams, emptyMap(), StandardV3_0.NAME );
+                new Cluster( clusterDirectory, numberOfCores, 0, discoveryServiceFactory, coreParams,
+                        emptyMap(), emptyMap(), emptyMap(), StandardV3_0.NAME );
 
         AtomicBoolean stopTheWorld = new AtomicBoolean();
-        BooleanSupplier keepGoing =
-                () -> !stopTheWorld.get() && untilTimeExpired( durationInMinutes, TimeUnit.MINUTES ).getAsBoolean();
+        BooleanSupplier notExpired = untilTimeExpired( durationInMinutes, TimeUnit.MINUTES );
+        BooleanSupplier keepGoing = () ->!stopTheWorld.get() && notExpired.getAsBoolean();
         Runnable onFailure = () -> stopTheWorld.set( true );
 
         ExecutorService service = Executors.newFixedThreadPool( 3 );
         try
         {
             cluster.start();
-            Future<Boolean> workload = service.submit( new Workload( keepGoing, onFailure, cluster ) );
-            Future<Boolean> startStopWorker = service.submit( new StartStopLoad( keepGoing, onFailure, cluster ) );
-            Future<Boolean> catchUpWorker = service.submit( new CatchUpLoad( keepGoing, onFailure, cluster ) );
+            Future<Throwable> workload = service.submit( new Workload( keepGoing, onFailure, cluster ) );
+            Future<Throwable> startStopWorker = service.submit( new StartStopLoad( keepGoing, onFailure, cluster ) );
+            Future<Throwable> catchUpWorker = service.submit( new CatchUpLoad( keepGoing, onFailure, cluster ) );
 
-            assertTrue( workload.get() );
-            assertTrue( startStopWorker.get() );
-            assertTrue( catchUpWorker.get() );
+            assertNull( prettyPrintStackTrace( workload.get() ), workload.get() );
+            assertNull( prettyPrintStackTrace( startStopWorker.get() ), startStopWorker.get() );
+            assertNull( prettyPrintStackTrace( catchUpWorker.get() ), catchUpWorker.get() );
         }
         finally
         {

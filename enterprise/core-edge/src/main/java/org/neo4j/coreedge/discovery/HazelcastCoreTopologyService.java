@@ -36,6 +36,7 @@ import com.hazelcast.instance.GroupProperty;
 import com.hazelcast.map.impl.MapListenerAdapter;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import org.neo4j.coreedge.core.CoreEdgeClusterSettings;
 import org.neo4j.coreedge.identity.ClusterId;
@@ -44,11 +45,13 @@ import org.neo4j.graphdb.config.Setting;
 import org.neo4j.helpers.AdvertisedSocketAddress;
 import org.neo4j.helpers.ListenSocketAddress;
 import org.neo4j.kernel.configuration.Config;
+import org.neo4j.kernel.impl.util.JobScheduler;
 import org.neo4j.kernel.lifecycle.LifecycleAdapter;
 import org.neo4j.logging.Log;
 import org.neo4j.logging.LogProvider;
 
 import static org.neo4j.coreedge.discovery.HazelcastClusterTopology.EDGE_SERVER_BOLT_ADDRESS_MAP_NAME;
+import static org.neo4j.kernel.impl.util.JobScheduler.SchedulingStrategy.POOLED;
 
 class HazelcastCoreTopologyService extends LifecycleAdapter implements CoreTopologyService
 {
@@ -57,17 +60,22 @@ class HazelcastCoreTopologyService extends LifecycleAdapter implements CoreTopol
     private final Log log;
     private final Log userLog;
     private final CoreTopologyListenerService listenerService;
+    private final JobScheduler scheduler;
     private String membershipRegistrationId;
     private String mapRegistrationId;
 
-    private HazelcastInstance hazelcastInstance;
-    private EdgeTopology latestEdgeTopology;
-    private CoreTopology latestCoreTopology;
+    private JobScheduler.JobHandle jobHandle;
 
-    HazelcastCoreTopologyService( Config config, MemberId myself, LogProvider logProvider, LogProvider userLogProvider )
+    private HazelcastInstance hazelcastInstance;
+    private volatile EdgeTopology latestEdgeTopology;
+    private volatile CoreTopology latestCoreTopology;
+
+    HazelcastCoreTopologyService( Config config, MemberId myself, JobScheduler jobScheduler, LogProvider logProvider,
+            LogProvider userLogProvider )
     {
         this.config = config;
         this.myself = myself;
+        this.scheduler = jobScheduler;
         this.listenerService = new CoreTopologyListenerService();
         this.log = logProvider.getLog( getClass() );
         this.userLog = userLogProvider.getLog( getClass() );
@@ -81,7 +89,7 @@ class HazelcastCoreTopologyService extends LifecycleAdapter implements CoreTopol
     }
 
     @Override
-    public boolean casClusterId( ClusterId clusterId )
+    public boolean setClusterId( ClusterId clusterId )
     {
         return HazelcastClusterTopology.casClusterId( hazelcastInstance, clusterId );
     }
@@ -97,6 +105,23 @@ class HazelcastCoreTopologyService extends LifecycleAdapter implements CoreTopol
         refreshCoreTopology();
         refreshEdgeTopology();
         listenerService.notifyListeners( coreServers() );
+
+        try
+        {
+            scheduler.start();
+        }
+        catch ( Throwable throwable )
+        {
+            log.debug( "Failed to start job scheduler." );
+            return;
+        }
+
+        JobScheduler.Group group = new JobScheduler.Group( "Scheduler", POOLED );
+        jobHandle = this.scheduler.scheduleRecurring( group, () ->
+        {
+            refreshCoreTopology();
+            refreshEdgeTopology();
+        }, config.get( CoreEdgeClusterSettings.cluster_topology_refresh ), TimeUnit.MILLISECONDS );
     }
 
     @Override
@@ -113,6 +138,10 @@ class HazelcastCoreTopologyService extends LifecycleAdapter implements CoreTopol
         catch ( Throwable e )
         {
             log.warn( "Failed to stop Hazelcast", e );
+        }
+        finally
+        {
+            jobHandle.cancel( true );
         }
     }
 
@@ -186,7 +215,8 @@ class HazelcastCoreTopologyService extends LifecycleAdapter implements CoreTopol
         return latestCoreTopology;
     }
 
-    private void refreshCoreTopology()
+    @Override
+    public void refreshCoreTopology()
     {
         latestCoreTopology = HazelcastClusterTopology.getCoreTopology( hazelcastInstance, log );
         log.info( "Current core topology is %s", coreServers() );

@@ -19,15 +19,14 @@
  */
 package org.neo4j.server.security.enterprise.auth.plugin.spi;
 
-import java.util.Map;
-
+import org.neo4j.server.security.enterprise.auth.plugin.api.AuthToken;
 import org.neo4j.server.security.enterprise.auth.plugin.api.AuthenticationException;
 import org.neo4j.server.security.enterprise.auth.plugin.api.RealmOperations;
 
 /**
  * An authentication plugin realm for the Neo4j enterprise security module.
  *
- * <p>If the configuration setting <tt>dbms.security.realms.plugin.authentication_enabled</tt> is set to <tt>true</tt>,
+ * <p>If the configuration setting <tt>dbms.security.plugin.authentication_enabled</tt> is set to <tt>true</tt>,
  * all objects that implements this interface that exists in the class path at Neo4j startup, will be
  * loaded as services.
  *
@@ -63,38 +62,18 @@ public interface AuthenticationPlugin extends RealmLifecycle
      * @see CustomCacheableAuthenticationInfo
      * @see RealmOperations#setAuthenticationCachingEnabled(boolean)
      */
-    AuthenticationInfo authenticate( Map<String,Object> authToken ) throws AuthenticationException;
+    AuthenticationInfo authenticate( AuthToken authToken ) throws AuthenticationException;
 
-    abstract class Adapter implements AuthenticationPlugin
+    abstract class Adapter extends RealmLifecycle.Adapter implements AuthenticationPlugin
     {
         @Override
         public String name()
         {
             return getClass().getName();
         }
-
-        @Override
-        public void initialize( RealmOperations realmOperations ) throws Throwable
-        {
-        }
-
-        @Override
-        public void start() throws Throwable
-        {
-        }
-
-        @Override
-        public void stop() throws Throwable
-        {
-        }
-
-        @Override
-        public void shutdown() throws Throwable
-        {
-        }
     }
 
-    abstract class CachingEnabledAdapter implements AuthenticationPlugin
+    abstract class CachingEnabledAdapter extends RealmLifecycle.Adapter implements AuthenticationPlugin
     {
         @Override
         public String name()
@@ -106,21 +85,6 @@ public interface AuthenticationPlugin extends RealmLifecycle
         public void initialize( RealmOperations realmOperations ) throws Throwable
         {
             realmOperations.setAuthenticationCachingEnabled( true );
-        }
-
-        @Override
-        public void start() throws Throwable
-        {
-        }
-
-        @Override
-        public void stop() throws Throwable
-        {
-        }
-
-        @Override
-        public void shutdown() throws Throwable
-        {
         }
     }
 }

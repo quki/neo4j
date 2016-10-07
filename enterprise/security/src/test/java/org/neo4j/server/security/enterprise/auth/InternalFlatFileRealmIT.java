@@ -35,11 +35,13 @@ import java.util.concurrent.TimeUnit;
 
 import org.neo4j.graphdb.mockfs.DelegatingFileSystemAbstraction;
 import org.neo4j.io.fs.FileSystemAbstraction;
+import org.neo4j.kernel.configuration.Config;
 import org.neo4j.kernel.impl.util.Neo4jJobScheduler;
 import org.neo4j.logging.LogProvider;
 import org.neo4j.logging.NullLogProvider;
 import org.neo4j.server.security.auth.AuthenticationStrategy;
 import org.neo4j.server.security.auth.BasicPasswordPolicy;
+import org.neo4j.server.security.auth.CommunitySecurityModule;
 import org.neo4j.server.security.auth.FileUserRepository;
 import org.neo4j.server.security.auth.PasswordPolicy;
 import org.neo4j.server.security.auth.RateLimitedAuthenticationStrategy;
@@ -75,11 +77,13 @@ public class InternalFlatFileRealmIT
         roleStoreFile = new File( "dbms", "roles" );
         final UserRepository userRepository = new FileUserRepository( fs, userStoreFile, logProvider );
         final RoleRepository roleRepository = new FileRoleRepository( fs, roleStoreFile, logProvider );
+        final UserRepository initialUserRepository = CommunitySecurityModule.getInitialUserRepository( Config
+                .defaults(), logProvider, fs );
         final PasswordPolicy passwordPolicy = new BasicPasswordPolicy();
         AuthenticationStrategy authenticationStrategy = new RateLimitedAuthenticationStrategy( Clocks.systemClock(), 3 );
 
         realm = new InternalFlatFileRealm( userRepository, roleRepository, passwordPolicy, authenticationStrategy,
-                        true, true, jobScheduler );
+                        true, true, jobScheduler, initialUserRepository );
         realm.init();
         realm.start();
     }
@@ -183,12 +187,12 @@ public class InternalFlatFileRealmIT
         }
     }
 
-    class TestJobScheduler extends Neo4jJobScheduler
+    static class TestJobScheduler extends Neo4jJobScheduler
     {
         Runnable scheduledRunnable;
 
         @Override
-        public JobHandle scheduleRecurring( Group group, Runnable r, long initialDelay, long delay, TimeUnit timeUnit )
+        public JobHandle schedule( Group group, Runnable r, long initialDelay, TimeUnit timeUnit )
         {
             this.scheduledRunnable = r;
             return null;

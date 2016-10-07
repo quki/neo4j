@@ -40,13 +40,13 @@ import org.neo4j.io.fs.FileUtils;
 import org.neo4j.kernel.configuration.Settings;
 import org.neo4j.server.CommunityBootstrapper;
 import org.neo4j.server.ServerTestUtils;
+import org.neo4j.server.configuration.ClientConnectorSettings;
 import org.neo4j.test.rule.SuppressOutput;
 import org.neo4j.test.rule.TestDirectory;
 import org.neo4j.test.server.ExclusiveServerTestBase;
 
 import static java.util.Arrays.asList;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.neo4j.server.configuration.ServerSettings.httpConnector;
 
 public class StartupLoggingIT extends ExclusiveServerTestBase
 {
@@ -91,8 +91,8 @@ public class StartupLoggingIT extends ExclusiveServerTestBase
             pairs.add( Pair.of( entry.getKey(), entry.getValue() ) );
         }
         pairs.add( Pair.of( GraphDatabaseSettings.allow_store_upgrade.name(), Settings.TRUE) );
-        pairs.add( Pair.of( httpConnector("1").type.name(), "HTTP" ) );
-        pairs.add( Pair.of( httpConnector("1").enabled.name(), "true" ) );
+        pairs.add( Pair.of( ClientConnectorSettings.httpConnector("http").type.name(), "HTTP" ) );
+        pairs.add( Pair.of( ClientConnectorSettings.httpConnector("http").enabled.name(), Settings.TRUE ) );
         return pairs.toArray( new Pair[pairs.size()] );
     }
 

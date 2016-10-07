@@ -37,6 +37,7 @@ import org.neo4j.coreedge.core.state.machines.tx.CoreReplicatedContent;
 import org.neo4j.coreedge.core.state.snapshot.CoreSnapshot;
 import org.neo4j.coreedge.core.state.snapshot.CoreStateType;
 import org.neo4j.coreedge.core.state.storage.StateStorage;
+import org.neo4j.coreedge.helper.StatUtil;
 import org.neo4j.kernel.internal.DatabaseHealth;
 import org.neo4j.kernel.lifecycle.LifecycleAdapter;
 import org.neo4j.kernel.monitoring.Monitors;
@@ -60,12 +61,13 @@ public class CommandApplicationProcess extends LifecycleAdapter
     private final CoreStateApplier applier;
     private final RaftLogCommitIndexMonitor commitIndexMonitor;
     private final OperationBatcher batcher;
+    private StatUtil.StatContext batchStat;
 
     private CoreStateMachines coreStateMachines;
 
     private boolean started;
     private long lastApplied = NOTHING;
-    private long lastSeenCommitIndex = NOTHING;
+    private volatile long lastSeenCommitIndex = NOTHING;
     private long lastFlushed = NOTHING;
 
     public CommandApplicationProcess(
@@ -94,6 +96,7 @@ public class CommandApplicationProcess extends LifecycleAdapter
         this.inFlightMap = inFlightMap;
         this.commitIndexMonitor = monitors.newMonitor( RaftLogCommitIndexMonitor.class, getClass() );
         this.batcher = new OperationBatcher( maxBatchSize );
+        this.batchStat = StatUtil.create( "BatchSize", log, 4096, true );
     }
 
     synchronized void notifyCommitted( long commitIndex )
@@ -121,7 +124,7 @@ public class CommandApplicationProcess extends LifecycleAdapter
         {
             try ( InFlightLogEntryReader logEntrySupplier = new InFlightLogEntryReader( raftLog, inFlightMap, true ) )
             {
-                for ( long logIndex = lastApplied + 1; !status.isCancelled() && logIndex <= lastToApply; logIndex++ )
+                for ( long logIndex = lastApplied + 1; !status.isCancelled() && logIndex <= lastSeenCommitIndex; logIndex++ )
                 {
                     RaftLogEntry entry = logEntrySupplier.get( logIndex );
                     if ( entry == null )
@@ -210,6 +213,8 @@ public class CommandApplicationProcess extends LifecycleAdapter
             {
                 return;
             }
+
+            batchStat.collect( batch.size() );
 
             long startIndex = lastIndex - batch.size() + 1;
             handleOperations( startIndex, batch );

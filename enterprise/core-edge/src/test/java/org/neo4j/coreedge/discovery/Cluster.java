@@ -331,6 +331,10 @@ public class Cluster
         {
             CoreClusterMember member = awaitCoreMemberWithRole( DEFAULT_TIMEOUT_MS, Role.LEADER );
             CoreGraphDatabase db = member.database();
+            if ( db == null )
+            {
+                throw new DatabaseShutdownException();
+            }
 
             try
             {
@@ -387,7 +391,7 @@ public class Cluster
                         LockSessionExpired;
     }
 
-    private static List<AdvertisedSocketAddress> buildAddresses( Set<Integer> coreServerIds )
+    public static List<AdvertisedSocketAddress> buildAddresses( Set<Integer> coreServerIds )
     {
         List<AdvertisedSocketAddress> addresses = new ArrayList<>();
         for ( Integer i : coreServerIds )
@@ -537,5 +541,26 @@ public class Cluster
         {
             executor.shutdown();
         }
+    }
+
+    public ClusterMember getMemberByBoltAddress( AdvertisedSocketAddress advertisedSocketAddress )
+    {
+        for ( CoreClusterMember member : coreMembers.values() )
+        {
+            if ( member.boltAdvertisedAddress().equals( advertisedSocketAddress.toString() ) )
+            {
+                return member;
+            }
+        }
+
+        for ( EdgeClusterMember member : edgeMembers.values() )
+        {
+            if ( member.boltAdvertisedAddress().equals( advertisedSocketAddress.toString() ) )
+            {
+                return member;
+            }
+        }
+
+        throw new RuntimeException( "Could not find a member for bolt address " + advertisedSocketAddress );
     }
 }

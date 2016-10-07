@@ -172,7 +172,9 @@ public class DataSourceModule
 
         Procedures procedures = setupProcedures( platformModule, editionModule );
 
-        deps.satisfyDependency( new NonTransactionalDbmsOperations.Factory( procedures ) );
+        deps.satisfyDependency( new NonTransactionalDbmsOperations( procedures ) );
+
+        editionModule.setupSecurityModule( platformModule, procedures );
 
         NonTransactionalTokenNameLookup tokenNameLookup = new NonTransactionalTokenNameLookup(
                 editionModule.labelTokenHolder,
@@ -347,7 +349,7 @@ public class DataSourceModule
         Log internalLog = platform.logging.getInternalLog( Procedures.class );
 
         Procedures procedures = new Procedures(
-                new SpecialBuiltInProcedures( Version.getKernel().getReleaseVersion(),
+                new SpecialBuiltInProcedures( Version.getNeo4jVersion(),
                         platform.databaseInfo.edition.toString() ),
                 pluginDir, internalLog );
         platform.life.add( procedures );

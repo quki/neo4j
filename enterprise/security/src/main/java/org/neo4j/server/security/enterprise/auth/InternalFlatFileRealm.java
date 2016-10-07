@@ -36,15 +36,16 @@ import org.apache.shiro.subject.SimplePrincipalCollection;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedList;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 
+import org.neo4j.kernel.api.exceptions.InvalidArgumentsException;
 import org.neo4j.kernel.api.security.AuthToken;
 import org.neo4j.kernel.api.security.AuthenticationResult;
-import org.neo4j.kernel.api.exceptions.InvalidArgumentsException;
 import org.neo4j.kernel.api.security.exception.InvalidAuthTokenException;
 import org.neo4j.kernel.impl.util.JobScheduler;
 import org.neo4j.server.security.auth.AuthenticationStrategy;
@@ -57,47 +58,53 @@ import org.neo4j.server.security.auth.exception.ConcurrentModificationException;
 import org.neo4j.server.security.enterprise.auth.plugin.api.PredefinedRoles;
 import org.neo4j.server.security.enterprise.auth.plugin.api.RealmOperations;
 import org.neo4j.server.security.enterprise.auth.plugin.spi.RealmLifecycle;
+import org.neo4j.server.security.enterprise.configuration.SecuritySettings;
 
 import static java.lang.String.format;
+import static java.util.Collections.emptySet;
 
 /**
  * Shiro realm wrapping FileUserRepository and FileRoleRepository
  */
-class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, EnterpriseUserManager
+public class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, EnterpriseUserManager
 {
     /**
      * This flag is used in the same way as User.PASSWORD_CHANGE_REQUIRED, but it's
      * placed here because of user suspension not being a part of community edition
      */
-    private int MAX_READ_ATTEMPTS = 10;
+    private static int MAX_READ_ATTEMPTS = 10;
 
     static final String IS_SUSPENDED = "is_suspended";
 
     private final UserRepository userRepository;
     private final RoleRepository roleRepository;
+    private final UserRepository initialUserRepository;
     private final PasswordPolicy passwordPolicy;
     private final AuthenticationStrategy authenticationStrategy;
     private final boolean authenticationEnabled;
     private final boolean authorizationEnabled;
     private final JobScheduler jobScheduler;
-    private JobScheduler.JobHandle reloadJobHandle;
+    private volatile JobScheduler.JobHandle reloadJobHandle;
 
     public InternalFlatFileRealm( UserRepository userRepository, RoleRepository roleRepository,
             PasswordPolicy passwordPolicy, AuthenticationStrategy authenticationStrategy,
-            JobScheduler jobScheduler )
+            JobScheduler jobScheduler, UserRepository initialUserRepository )
     {
         this( userRepository, roleRepository, passwordPolicy, authenticationStrategy, true, true,
-                jobScheduler );
+                jobScheduler, initialUserRepository );
     }
 
     InternalFlatFileRealm( UserRepository userRepository, RoleRepository roleRepository,
             PasswordPolicy passwordPolicy, AuthenticationStrategy authenticationStrategy,
-            boolean authenticationEnabled, boolean authorizationEnabled, JobScheduler jobScheduler )
+            boolean authenticationEnabled, boolean authorizationEnabled, JobScheduler jobScheduler,
+            UserRepository initialUserRepository )
     {
         super();
 
+        setName( SecuritySettings.NATIVE_REALM_NAME );
         this.userRepository = userRepository;
         this.roleRepository = roleRepository;
+        this.initialUserRepository = initialUserRepository;
         this.passwordPolicy = passwordPolicy;
         this.authenticationStrategy = authenticationStrategy;
         this.authenticationEnabled = authenticationEnabled;
@@ -111,19 +118,10 @@ class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, 
         setRolePermissionResolver( PredefinedRolesBuilder.rolePermissionResolver );
     }
 
-    private void setUsersAndRoles( ListSnapshot<User> users, ListSnapshot<RoleRecord> roles )
-            throws IOException, InvalidArgumentsException
-    {
-        synchronized ( this )
-        {
-            userRepository.setUsers( users );
-            roleRepository.setRoles( roles );
-        }
-    }
-
     @Override
     public void initialize( RealmOperations ignore ) throws Throwable
     {
+        initialUserRepository.init();
         userRepository.init();
         roleRepository.init();
     }
@@ -131,16 +129,34 @@ class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, 
     @Override
     public void start() throws Throwable
     {
+        initialUserRepository.start();
         userRepository.start();
         roleRepository.start();
 
-        ensureDefaultUsers();
-        ensureDefaultRoles();
+        Set<String> addedDefaultUsers = ensureDefaultUsers();
+        ensureDefaultRoles( addedDefaultUsers );
 
-        reloadJobHandle = jobScheduler.scheduleRecurring(
+        scheduleNextFileReload();
+    }
+
+    protected void scheduleNextFileReload()
+    {
+        reloadJobHandle = jobScheduler.schedule(
                 JobScheduler.Groups.nativeSecurity,
-                () -> readFilesFromDisk( MAX_READ_ATTEMPTS, new LinkedList<>() ),
-                5, 5, TimeUnit.SECONDS );
+                this::readFilesFromDisk,
+                10, TimeUnit.SECONDS );
+    }
+
+    private void readFilesFromDisk()
+    {
+        try
+        {
+            readFilesFromDisk( MAX_READ_ATTEMPTS, new LinkedList<>() );
+        }
+        finally
+        {
+            scheduleNextFileReload();
+        }
     }
 
     private void readFilesFromDisk( int attemptLeft, java.util.List<String> failures )
@@ -153,13 +169,29 @@ class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, 
 
         try
         {
-            ListSnapshot<User> users = userRepository.getPersistedSnapshot();
-            ListSnapshot<RoleRecord> roles = roleRepository.getPersistedSnapshot();
-            if ( RoleRepository.validate( users.values, roles.values ) )
+            final boolean valid;
+            final boolean needsUpdate;
+            synchronized ( this )
             {
-                setUsersAndRoles( users, roles );
+                ListSnapshot<User> users = userRepository.getPersistedSnapshot();
+                ListSnapshot<RoleRecord> roles = roleRepository.getPersistedSnapshot();
+
+                needsUpdate = users.fromPersisted() || roles.fromPersisted();
+                valid = needsUpdate && RoleRepository.validate( users.values(), roles.values() );
+
+                if ( valid )
+                {
+                    if ( users.fromPersisted() )
+                    {
+                        userRepository.setUsers( users );
+                    }
+                    if ( roles.fromPersisted() )
+                    {
+                        roleRepository.setRoles( roles );
+                    }
+                }
             }
-            else
+            if ( needsUpdate && !valid )
             {
                 failures.add( "Role-auth file combination not valid." );
                 Thread.sleep( 10 );
@@ -174,19 +206,29 @@ class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, 
     }
 
     /* Adds neo4j user if no users exist */
-    private void ensureDefaultUsers() throws IOException, InvalidArgumentsException
+    private Set<String> ensureDefaultUsers() throws Throwable
     {
         if ( authenticationEnabled || authorizationEnabled )
         {
-            if ( numberOfUsers() == 0 )
+            if ( userRepository.numberOfUsers() == 0 )
             {
-                newUser( "neo4j", "neo4j", true );
+                User neo4j = newUser( INITIAL_USER_NAME, "neo4j", true );
+                if ( initialUserRepository.numberOfUsers() > 0 )
+                {
+                    User initUser = initialUserRepository.getUserByName( INITIAL_USER_NAME );
+                    if (initUser != null)
+                    {
+                        userRepository.update( neo4j, initUser );
+                    }
+                }
+                return Collections.singleton( INITIAL_USER_NAME );
             }
         }
+        return Collections.emptySet();
     }
 
     /* Builds all predefined roles if no roles exist. Adds 'neo4j' to admin role if no admin is assigned */
-    private void ensureDefaultRoles() throws IOException, InvalidArgumentsException
+    private void ensureDefaultRoles( Set<String> addedDefaultUsers ) throws IOException, InvalidArgumentsException
     {
         if ( authenticationEnabled || authorizationEnabled )
         {
@@ -197,12 +239,9 @@ class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, 
                     newRole( role );
                 }
             }
-            if ( this.getUsernamesForRole( PredefinedRoles.ADMIN ).size() == 0 )
+            for ( String username : addedDefaultUsers )
             {
-                if ( getAllUsernames().contains( "neo4j" ) )
-                {
-                    addRoleToUser( PredefinedRoles.ADMIN, "neo4j" );
-                }
+                addRoleToUser( PredefinedRoles.ADMIN, username );
             }
         }
     }
@@ -210,6 +249,7 @@ class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, 
     @Override
     public void stop() throws Throwable
     {
+        initialUserRepository.stop();
         userRepository.stop();
         roleRepository.stop();
 
@@ -223,6 +263,7 @@ class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, 
     @Override
     public void shutdown() throws Throwable
     {
+        initialUserRepository.shutdown();
         userRepository.shutdown();
         roleRepository.shutdown();
         setCacheManager( null );
@@ -357,7 +398,10 @@ class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, 
                 .withCredentials( Credential.forPassword( initialPassword ) )
                 .withRequiredPasswordChange( requirePasswordChange )
                 .build();
-        userRepository.create( user );
+        synchronized ( this )
+        {
+            userRepository.create( user );
+        }
 
         return user;
     }
@@ -372,9 +416,12 @@ class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, 
         }
 
         SortedSet<String> userSet = new TreeSet<>( Arrays.asList( usernames ) );
-
         RoleRecord role = new RoleRecord.Builder().withName( roleName ).withUsers( userSet ).build();
-        roleRepository.create( role );
+
+        synchronized ( this )
+        {
+            roleRepository.create( role );
+        }
 
         return role;
     }
@@ -410,6 +457,12 @@ class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, 
             throw new InvalidArgumentsException( "Role '" + roleName + "' does not exist." );
         }
         return role;
+    }
+
+    @Override
+    public RoleRecord silentlyGetRole( String roleName )
+    {
+        return roleRepository.getRoleByName( roleName );
     }
 
     @Override
@@ -496,13 +549,17 @@ class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, 
     }
 
     @Override
+    public User silentlyGetUser( String username )
+    {
+        return userRepository.getUserByName( username );
+    }
+
+    @Override
     public void setUserPassword( String username, String password, boolean requirePasswordChange )
             throws IOException, InvalidArgumentsException
     {
         User existingUser = getUser( username );
-
         passwordPolicy.validatePassword( password );
-
         if ( existingUser.credentials().matchesPassword( password ) )
         {
             throw new InvalidArgumentsException( "Old password and new password cannot be the same." );
@@ -514,7 +571,10 @@ class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, 
                     .withCredentials( Credential.forPassword( password ) )
                     .withRequiredPasswordChange( requirePasswordChange )
                     .build();
-            userRepository.update( existingUser, updatedUser );
+            synchronized ( this )
+            {
+                userRepository.update( existingUser, updatedUser );
+            }
         }
         catch ( ConcurrentModificationException e )
         {
@@ -528,15 +588,16 @@ class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, 
     @Override
     public void suspendUser( String username ) throws IOException, InvalidArgumentsException
     {
-        // This method is not synchronized as it only modifies the UserRepository, which is synchronized in itself
-        // If user is modified between getUserByName and update, we get ConcurrentModificationException and try again
         User user = getUser( username );
         if ( !user.hasFlag( IS_SUSPENDED ) )
         {
             User suspendedUser = user.augment().withFlag( IS_SUSPENDED ).build();
             try
             {
-                userRepository.update( user, suspendedUser );
+                synchronized ( this )
+                {
+                    userRepository.update( user, suspendedUser );
+                }
             }
             catch ( ConcurrentModificationException e )
             {
@@ -551,8 +612,6 @@ class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, 
     public void activateUser( String username, boolean requirePasswordChange )
             throws IOException, InvalidArgumentsException
     {
-        // This method is not synchronized as it only modifies the UserRepository, which is synchronized in itself
-        // If user is modified between getUserByName and update, we get ConcurrentModificationException and try again
         User user = getUser( username );
         if ( user.hasFlag( IS_SUSPENDED ) )
         {
@@ -562,7 +621,10 @@ class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, 
                     .build();
             try
             {
-                userRepository.update( user, activatedUser );
+                synchronized ( this )
+                {
+                    userRepository.update( user, activatedUser );
+                }
             }
             catch ( ConcurrentModificationException e )
             {
@@ -587,10 +649,23 @@ class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, 
     }
 
     @Override
+    public Set<String> silentlyGetRoleNamesForUser( String username )
+    {
+        return roleRepository.getRoleNamesByUsername( username );
+    }
+
+    @Override
     public Set<String> getUsernamesForRole( String roleName ) throws InvalidArgumentsException
     {
         RoleRecord role = getRole( roleName );
         return role.users();
+    }
+
+    @Override
+    public Set<String> silentlyGetUsernamesForRole( String roleName )
+    {
+        RoleRecord role = silentlyGetRole( roleName );
+        return role == null ? emptySet() : role.users();
     }
 
     @Override
@@ -599,6 +674,7 @@ class InternalFlatFileRealm extends AuthorizingRealm implements RealmLifecycle, 
         return userRepository.getAllUsernames();
     }
 
+    // this is only used from already synchronized code blocks
     private void removeUserFromAllRoles( String username ) throws IOException
     {
         try

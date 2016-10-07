@@ -26,12 +26,16 @@ import org.neo4j.kernel.api.exceptions.InvalidArgumentsException;
 
 public interface UserManager
 {
+    String INITIAL_USER_NAME = "neo4j";
+
     User newUser( String username, String initialPassword, boolean requirePasswordChange )
             throws IOException, InvalidArgumentsException;
 
     boolean deleteUser( String username ) throws IOException, InvalidArgumentsException;
 
     User getUser( String username ) throws InvalidArgumentsException;
+
+    User silentlyGetUser( String username );
 
     void setUserPassword( String username, String password, boolean requirePasswordChange )
             throws IOException, InvalidArgumentsException;

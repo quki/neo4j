@@ -43,9 +43,10 @@ import org.neo4j.kernel.impl.store.format.standard.StandardV3_0;
 import static java.lang.Integer.parseInt;
 import static java.lang.Long.parseLong;
 import static java.lang.System.getProperty;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertNull;
 import static org.neo4j.StressTestingHelper.ensureExistsAndEmpty;
 import static org.neo4j.StressTestingHelper.fromEnv;
+import static org.neo4j.StressTestingHelper.prettyPrintStackTrace;
 import static org.neo4j.coreedge.stresstests.ClusterConfiguration.configureBackup;
 import static org.neo4j.coreedge.stresstests.ClusterConfiguration.configureRaftLogRotationAndPruning;
 import static org.neo4j.coreedge.stresstests.ClusterConfiguration.configureTxLogRotationAndPruning;
@@ -97,22 +98,22 @@ public class BackupStoreCopyInteractionStressTesting
                         instanceCoreParams, edgeParams, instanceEdgeParams, StandardV3_0.NAME );
 
         AtomicBoolean stopTheWorld = new AtomicBoolean();
-        BooleanSupplier keepGoing =
-                () -> !stopTheWorld.get() && untilTimeExpired( durationInMinutes, TimeUnit.MINUTES ).getAsBoolean();
+        BooleanSupplier notExpired = untilTimeExpired( durationInMinutes, TimeUnit.MINUTES );
+        BooleanSupplier keepGoing = () ->!stopTheWorld.get() && notExpired.getAsBoolean();
         Runnable onFailure = () -> stopTheWorld.set( true );
 
         ExecutorService service = Executors.newFixedThreadPool( 3 );
         try
         {
             cluster.start();
-            Future<Boolean> workload = service.submit( new Workload( keepGoing, onFailure, cluster ) );
-            Future<Boolean> startStopWorker = service.submit( new StartStopLoad( keepGoing, onFailure, cluster ) );
-            Future<Boolean> backupWorker =
+            Future<Throwable> workload = service.submit( new Workload( keepGoing, onFailure, cluster ) );
+            Future<Throwable> startStopWorker = service.submit( new StartStopLoad( keepGoing, onFailure, cluster ) );
+            Future<Throwable> backupWorker =
                     service.submit( new BackupLoad( keepGoing, onFailure, cluster, backupDirectory, backupAddress ) );
 
-            assertTrue( workload.get() );
-            assertTrue( startStopWorker.get() );
-            assertTrue( backupWorker.get() );
+            assertNull( prettyPrintStackTrace( workload.get() ), workload.get() );
+            assertNull( prettyPrintStackTrace( startStopWorker.get() ), startStopWorker.get() );
+            assertNull( prettyPrintStackTrace( backupWorker.get() ), backupWorker.get() );
         }
         finally
         {

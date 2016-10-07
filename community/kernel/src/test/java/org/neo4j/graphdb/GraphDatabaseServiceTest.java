@@ -24,8 +24,10 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
 
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+
 import org.neo4j.kernel.DatabaseAvailability;
 import org.neo4j.kernel.DeadlockDetectedException;
 import org.neo4j.kernel.impl.MyRelTypes;
@@ -36,6 +38,7 @@ import org.neo4j.test.rule.DatabaseRule;
 import org.neo4j.test.rule.ImpermanentDatabaseRule;
 import org.neo4j.test.rule.concurrent.OtherThreadRule;
 
+import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.iterableWithSize;
 import static org.junit.Assert.assertEquals;
@@ -172,6 +175,94 @@ public class GraphDatabaseServiceTest
                 {
                 }
             }
+        }
+    }
+
+    @Test
+    public void terminateNestedTransactionThrowsExceptionOnNextNestedOperationMultiThreadedVersion() throws Exception
+    {
+        // Given
+        final GraphDatabaseService db = new TestGraphDatabaseFactory().newImpermanentDatabase();
+        try
+        {
+            // When
+            final CountDownLatch txSet = new CountDownLatch( 1 );
+            final CountDownLatch terminated = new CountDownLatch( 1 );
+            final Transaction[] outer = {null};
+            final Exception[] threadFail = {null};
+
+            Thread worker = new Thread( () ->
+            {
+                try ( Transaction inner = db.beginTx() )
+                {
+                    outer[0] = inner;
+                    txSet.countDown();
+                    terminated.await();
+                    db.createNode();
+                    fail( "should have failed earlier" );
+                }
+                catch ( Exception e )
+                {
+                    threadFail[0] = e;
+                }
+            } );
+            worker.start();
+            txSet.await();
+            outer[0].terminate();
+            terminated.countDown();
+            worker.join();
+            assertThat( threadFail[0], instanceOf( TransactionTerminatedException.class ) );
+        }
+        finally
+        {
+            db.shutdown();
+        }
+    }
+
+    @Test
+    public void terminateNestedTransactionThrowsExceptionOnNextNestedOperationMultiThreadedVersionWithNestedTx()
+            throws Exception
+    {
+        // Given
+        final GraphDatabaseService db = new TestGraphDatabaseFactory().newImpermanentDatabase();
+        try
+        {
+            // When
+            final CountDownLatch txSet = new CountDownLatch( 1 );
+            final CountDownLatch terminated = new CountDownLatch( 1 );
+            final Transaction[] outer = {null};
+            final Exception[] threadFail = {null};
+
+            Thread worker = new Thread( () ->
+            {
+                Transaction transaction = db.beginTx();
+                try ( Transaction inner = db.beginTx() )
+                {
+                    outer[0] = inner;
+                    txSet.countDown();
+                    terminated.await();
+                    db.createNode();
+                    fail( "should have failed earlier" );
+                }
+                catch ( Exception e )
+                {
+                    threadFail[0] = e;
+                }
+                finally
+                {
+                    transaction.close();
+                }
+            } );
+            worker.start();
+            txSet.await();
+            outer[0].terminate();
+            terminated.countDown();
+            worker.join();
+            assertThat( threadFail[0], instanceOf( TransactionTerminatedException.class ) );
+        }
+        finally
+        {
+            db.shutdown();
         }
     }
 

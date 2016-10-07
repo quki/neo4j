@@ -47,6 +47,7 @@ import org.neo4j.kernel.api.impl.index.storage.DirectoryFactory;
 import org.neo4j.kernel.api.impl.schema.LuceneSchemaIndexProvider;
 import org.neo4j.kernel.api.index.SchemaIndexProvider;
 import org.neo4j.kernel.configuration.Config;
+import org.neo4j.kernel.ha.HaSettings;
 import org.neo4j.kernel.ha.HighlyAvailableGraphDatabase;
 import org.neo4j.kernel.impl.MyRelTypes;
 import org.neo4j.kernel.impl.api.scan.InMemoryLabelScanStore;
@@ -168,7 +169,7 @@ public class StoreMigratorFrom20IT
     public void shouldMigrateCluster() throws Throwable
     {
         // Given
-        File legacyStoreDir = find20FormatStoreDirectory( storeDir.directory() );
+        File legacyStoreDir = find20FormatStoreDirectory( storeDir.directory( "legacy-indexes" ) );
 
         // When
         StoreMigrator storeMigrator = new StoreMigrator( fs, pageCache, getConfig(), NullLogService.getInstance(),
@@ -251,7 +252,9 @@ public class StoreMigratorFrom20IT
 
     private Config getConfig()
     {
-        return new Config( stringMap( GraphDatabaseSettings.record_format.name(), recordFormatName ),
+        return new Config( stringMap(
+                GraphDatabaseSettings.record_format.name(), recordFormatName,
+                HaSettings.read_timeout.name(), "2m" ),
                 GraphDatabaseSettings.class );
     }
 }

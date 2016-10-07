@@ -30,7 +30,6 @@ import org.apache.directory.server.core.annotations.LoadSchema;
 import org.apache.directory.server.core.integ.FrameworkRunner;
 import org.apache.directory.server.ldap.handlers.extended.StartTlsHandler;
 import org.apache.shiro.realm.ldap.JndiLdapContextFactory;
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -38,7 +37,6 @@ import org.junit.runner.RunWith;
 import java.io.File;
 import java.io.IOException;
 import java.net.URL;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Consumer;
 import javax.naming.directory.BasicAttribute;
@@ -52,12 +50,16 @@ import org.neo4j.kernel.api.exceptions.Status;
 import org.neo4j.kernel.impl.proc.Procedures;
 import org.neo4j.kernel.internal.GraphDatabaseAPI;
 import org.neo4j.server.security.enterprise.auth.ProcedureInteractionTestBase;
-import org.neo4j.server.security.enterprise.auth.SecuritySettings;
+import org.neo4j.server.security.enterprise.configuration.SecuritySettings;
 
+import static java.util.Collections.emptyList;
+import static java.util.Collections.emptyMap;
 import static org.hamcrest.CoreMatchers.equalTo;
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
-import static org.neo4j.bolt.v1.messaging.message.InitMessage.init;
+import static org.hamcrest.Matchers.hasEntry;
 import static org.neo4j.bolt.v1.messaging.message.PullAllMessage.pullAll;
 import static org.neo4j.bolt.v1.messaging.message.RunMessage.run;
 import static org.neo4j.bolt.v1.messaging.util.MessageMatchers.msgFailure;
@@ -245,6 +247,23 @@ public class LdapAuthenticationIT extends EnterpriseAuthenticationTestBase
     }
 
     @Test
+    public void shouldShowCurrentUser() throws Throwable
+    {
+        // When
+        assertAuth( "smith", "abc123" );
+        client.send( TransportTestUtil.chunk(
+                run( "CALL dbms.security.showCurrentUser()" ),
+                pullAll() ) );
+
+        // Then
+        // Assuming showCurrentUser has fields username, roles, flags
+        assertThat( client, eventuallyReceives(
+                msgSuccess(),
+                msgRecord( eqRecord( equalTo( "smith" ), equalTo( emptyList() ), equalTo( emptyList() ) ) )
+            ) );
+    }
+
+    @Test
     public void shouldBeAbleToLoginAndAuthorizeNoPermissionUserWithLdapOnlyAndNoGroupToRoleMapping() throws Throwable
     {
         // When
@@ -298,6 +317,24 @@ public class LdapAuthenticationIT extends EnterpriseAuthenticationTestBase
     }
 
     @Test
+    public void shouldFailIfAuthorizationExpiredWithUserLdapContext() throws Throwable
+    {
+        restartNeo4jServerWithOverriddenSettings( settings -> {
+            settings.put( SecuritySettings.ldap_authorization_use_system_account, "false" );
+        } );
+
+        // Then
+        assertAuth( "neo4j", "abc123" );
+
+        client.send( TransportTestUtil.chunk(
+                run( "CALL dbms.security.clearAuthCache() MATCH (n) RETURN n" ), pullAll() ) );
+
+        // Then
+        assertThat( client, eventuallyReceives( msgSuccess(),
+                msgFailure( Status.Security.AuthorizationExpired, "LDAP authorization info expired." ) ) );
+    }
+
+    @Test
     public void shouldBeAbleToLoginAndAuthorizeNoPermissionUserWithUserLdapContext() throws Throwable
     {
         restartNeo4jServerWithOverriddenSettings( settings -> {
@@ -327,8 +364,10 @@ public class LdapAuthenticationIT extends EnterpriseAuthenticationTestBase
     {
         // When
         restartNeo4jServerWithOverriddenSettings( settings -> {
-            settings.put( SecuritySettings.internal_authentication_enabled, "false" );
-            settings.put( SecuritySettings.internal_authorization_enabled, "true" );
+            settings.put( SecuritySettings.active_realms,
+                    SecuritySettings.NATIVE_REALM_NAME + "," + SecuritySettings.LDAP_REALM_NAME );
+            settings.put( SecuritySettings.native_authentication_enabled, "false" );
+            settings.put( SecuritySettings.native_authorization_enabled, "true" );
             settings.put( SecuritySettings.ldap_authentication_enabled, "true" );
             settings.put( SecuritySettings.ldap_authorization_enabled, "false" );
         } );
@@ -571,8 +610,10 @@ public class LdapAuthenticationIT extends EnterpriseAuthenticationTestBase
     public void shouldBeAbleToLoginWithLdapWhenSelectingRealmFromClient() throws Throwable
     {
         restartNeo4jServerWithOverriddenSettings( settings -> {
-            settings.put( SecuritySettings.internal_authentication_enabled, "true" );
-            settings.put( SecuritySettings.internal_authorization_enabled, "true" );
+            settings.put( SecuritySettings.active_realms,
+                    SecuritySettings.NATIVE_REALM_NAME + "," + SecuritySettings.LDAP_REALM_NAME );
+            settings.put( SecuritySettings.native_authentication_enabled, "true" );
+            settings.put( SecuritySettings.native_authorization_enabled, "true" );
             settings.put( SecuritySettings.ldap_authentication_enabled, "true" );
             settings.put( SecuritySettings.ldap_authorization_enabled, "true" );
         } );
@@ -778,13 +819,15 @@ public class LdapAuthenticationIT extends EnterpriseAuthenticationTestBase
 
     private static Consumer<Map<Setting<?>,String>> ldapOnlyAuthSettings = settings ->
     {
-        settings.put( SecuritySettings.internal_authentication_enabled, "false" );
-        settings.put( SecuritySettings.internal_authorization_enabled, "false" );
+        settings.put( SecuritySettings.active_realm, SecuritySettings.LDAP_REALM_NAME );
+        settings.put( SecuritySettings.native_authentication_enabled, "false" );
+        settings.put( SecuritySettings.native_authorization_enabled, "false" );
         settings.put( SecuritySettings.ldap_authentication_enabled, "true" );
         settings.put( SecuritySettings.ldap_authorization_enabled, "true" );
     };
 
     private static Consumer<Map<Setting<?>,String>> activeDirectoryOnEc2Settings = settings -> {
+        settings.put( SecuritySettings.active_realm, SecuritySettings.LDAP_REALM_NAME );
         //settings.put( SecuritySettings.ldap_server, "ec2-176-34-79-113.eu-west-1.compute.amazonaws.com:389" );
         settings.put( SecuritySettings.ldap_server, "henrik.neohq.net:389" );
         settings.put( SecuritySettings.ldap_user_dn_template, "cn={0},cn=Users,dc=neo4j,dc=com" );

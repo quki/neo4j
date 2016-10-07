@@ -26,7 +26,7 @@ import org.neo4j.server.security.enterprise.auth.plugin.api.RealmOperations;
 /**
  * An authorization plugin realm for the Neo4j enterprise security module.
  *
- * <p>If the configuration setting <tt>dbms.security.realms.plugin.authorization_enabled</tt> is set to <tt>true</tt>,
+ * <p>If the configuration setting <tt>dbms.security.plugin.authorization_enabled</tt> is set to <tt>true</tt>,
  * all objects that implements this interface that exists in the class path at Neo4j startup, will be
  * loaded as services.
  *
@@ -83,9 +83,8 @@ public interface AuthorizationPlugin extends RealmLifecycle
      */
     AuthorizationInfo authorize( Collection<PrincipalAndRealm> principals );
 
-    class Adapter implements AuthorizationPlugin
+    class Adapter extends RealmLifecycle.Adapter implements AuthorizationPlugin
     {
-
         @Override
         public String name()
         {
@@ -96,26 +95,6 @@ public interface AuthorizationPlugin extends RealmLifecycle
         public AuthorizationInfo authorize( Collection<PrincipalAndRealm> principals )
         {
             return null;
-        }
-
-        @Override
-        public void initialize( RealmOperations realmOperations ) throws Throwable
-        {
-        }
-
-        @Override
-        public void start() throws Throwable
-        {
-        }
-
-        @Override
-        public void stop() throws Throwable
-        {
-        }
-
-        @Override
-        public void shutdown() throws Throwable
-        {
         }
     }
 }

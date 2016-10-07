@@ -516,9 +516,6 @@ public abstract class GraphDatabaseSettings
     public static final Setting<File> auth_store =
             pathSetting( "unsupported.dbms.security.auth_store.location", NO_DEFAULT );
 
-    @Internal
-    public static final Setting<String> auth_manager = setting( "unsupported.dbms.security.auth_manager", STRING, "" );
-
     // Bolt Settings
 
     @Description("Default network interface to listen for incoming connections. " +
@@ -547,15 +544,16 @@ public abstract class GraphDatabaseSettings
         //       consider future options like non-tcp transports, making `address` a bad choice
         //       as a setting that applies to every connector, for instance.
 
-        protected final GroupSettingSupport group;
+        public final GroupSettingSupport group;
 
-        // For sub-classes, we provide this protected constructor that allows overriding
-        // the default 'type' setting value.
-        protected Connector( String key, String typeDefault )
+        // Note: We no longer use the typeDefault parameter because it made for confusing behaviour;
+        // connectors with unspecified would override settings of other, unrelated connectors.
+        // However, we cannot remove the parameter at this
+        protected Connector( String key, @SuppressWarnings("UnusedParameters") String typeDefault )
         {
             group = new GroupSettingSupport( Connector.class, key );
             enabled = group.scope( setting( "enabled", BOOLEAN, "false" ) );
-            type = group.scope( setting( "type", options( ConnectorType.class ), typeDefault ) );
+            type = group.scope( setting( "type", options( ConnectorType.class ), NO_DEFAULT ) );
         }
 
         public enum ConnectorType
@@ -590,7 +588,7 @@ public abstract class GraphDatabaseSettings
 
         public BoltConnector(String key)
         {
-            super(key, ConnectorType.BOLT.name() );
+            super(key, null );
             encryption_level = group.scope(
                     setting( "tls_level", options( EncryptionLevel.class ), OPTIONAL.name() ));
             Setting<ListenSocketAddress> legacyAddressSetting = listenAddress( "address", 7687 );
@@ -628,12 +626,15 @@ public abstract class GraphDatabaseSettings
 
     public static List<BoltConnector> boltConnectors( Config config )
     {
-        return config
+        List<BoltConnector> boltConnectors = config
                 .view( enumerate( Connector.class ) )
                 .map( BoltConnector::new )
-                .filter( ( connConfig ) ->
-                        config.get( connConfig.type ) == BOLT &&
-                                config.get( connConfig.enabled ) )
+                .filter( connConfig -> connConfig.group.groupKey.equals( "bolt" ) ||
+                        config.get( connConfig.type ) == BOLT )
+                .collect( Collectors.toList() );
+
+        return boltConnectors.stream()
+                .filter( connConfig -> config.get( connConfig.enabled ) )
                 .collect( Collectors.toList() );
     }
 }

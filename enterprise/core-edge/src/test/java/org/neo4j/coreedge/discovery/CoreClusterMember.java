@@ -31,14 +31,18 @@ import org.neo4j.coreedge.core.consensus.RaftMachine;
 import org.neo4j.coreedge.core.consensus.log.segmented.FileNames;
 import org.neo4j.coreedge.core.state.CoreState;
 import org.neo4j.coreedge.identity.MemberId;
-import org.neo4j.helpers.AdvertisedSocketAddress;
 import org.neo4j.graphdb.factory.GraphDatabaseSettings;
+import org.neo4j.helpers.AdvertisedSocketAddress;
 import org.neo4j.io.fs.DefaultFileSystemAbstraction;
 import org.neo4j.kernel.GraphDatabaseDependencies;
+import org.neo4j.kernel.configuration.Config;
 import org.neo4j.logging.Level;
+import org.neo4j.server.configuration.ClientConnectorSettings;
+import org.neo4j.server.configuration.ClientConnectorSettings.HttpConnector.Encryption;
 
 import static java.lang.String.format;
 import static java.util.stream.Collectors.joining;
+
 import static org.neo4j.coreedge.core.EnterpriseCoreEditionModule.CLUSTER_STATE_DIRECTORY_NAME;
 import static org.neo4j.coreedge.core.consensus.log.RaftLog.PHYSICAL_LOG_DIRECTORY_NAME;
 import static org.neo4j.helpers.collection.MapUtil.stringMap;
@@ -50,6 +54,7 @@ public class CoreClusterMember implements ClusterMember
     private final File storeDir;
     private final Map<String, String> config = stringMap();
     private final int serverId;
+    private final String boltAdvertisedAddress;
     private CoreGraphDatabase database;
 
     public CoreClusterMember( int serverId, int clusterSize,
@@ -65,6 +70,7 @@ public class CoreClusterMember implements ClusterMember
         int txPort = 6000 + serverId;
         int raftPort = 7000 + serverId;
         int boltPort = 8000 + serverId;
+        int httpPort = 10000 + serverId;
 
         String initialMembers = addresses.stream().map( AdvertisedSocketAddress::toString ).collect( joining( "," ) );
 
@@ -75,12 +81,18 @@ public class CoreClusterMember implements ClusterMember
         config.put( CoreEdgeClusterSettings.transaction_listen_address.name(), "127.0.0.1:" + txPort );
         config.put( CoreEdgeClusterSettings.raft_listen_address.name(), "127.0.0.1:" + raftPort );
         config.put( CoreEdgeClusterSettings.expected_core_cluster_size.name(), String.valueOf( clusterSize ) );
+        config.put( CoreEdgeClusterSettings.leader_election_timeout.name(), "500ms" );
         config.put( GraphDatabaseSettings.store_internal_log_level.name(), Level.DEBUG.name() );
         config.put( GraphDatabaseSettings.record_format.name(), recordFormat );
         config.put( new GraphDatabaseSettings.BoltConnector( "bolt" ).type.name(), "BOLT" );
         config.put( new GraphDatabaseSettings.BoltConnector( "bolt" ).enabled.name(), "true" );
-        config.put( new GraphDatabaseSettings.BoltConnector( "bolt" ).address.name(), "0.0.0.0:" + boltPort );
-        config.put( new GraphDatabaseSettings.BoltConnector( "bolt" ).advertised_address.name(), "127.0.0.1:" + boltPort );
+        config.put( new GraphDatabaseSettings.BoltConnector( "bolt" ).listen_address.name(), "127.0.0.1:" + boltPort );
+        boltAdvertisedAddress = "127.0.0.1:" + boltPort;
+        config.put( new GraphDatabaseSettings.BoltConnector( "bolt" ).advertised_address.name(), boltAdvertisedAddress );
+        config.put( new ClientConnectorSettings.HttpConnector( "http", Encryption.NONE ).type.name(), "HTTP" );
+        config.put( new ClientConnectorSettings.HttpConnector( "http", Encryption.NONE ).enabled.name(), "true" );
+        config.put( new ClientConnectorSettings.HttpConnector( "http", Encryption.NONE ).listen_address.name(), "127.0.0.1:" + httpPort );
+        config.put( new ClientConnectorSettings.HttpConnector( "http", Encryption.NONE ).advertised_address.name(), "127.0.0.1:" + httpPort );
         config.put( GraphDatabaseSettings.pagecache_memory.name(), "8m" );
         config.put( GraphDatabaseSettings.auth_store.name(), new File( parentDir, "auth" ).getAbsolutePath() );
         config.putAll( extraParams );
@@ -96,6 +108,21 @@ public class CoreClusterMember implements ClusterMember
         this.discoveryServiceFactory = discoveryServiceFactory;
         storeDir = new File( new File( new File( neo4jHome, "data" ), "databases" ), "graph.db" );
         storeDir.mkdirs();
+    }
+
+    public String boltAdvertisedAddress()
+    {
+        return boltAdvertisedAddress;
+    }
+
+    public String routingURI()
+    {
+        return String.format( "bolt+routing://%s", boltAdvertisedAddress );
+    }
+
+    public String directURI()
+    {
+        return String.format( "bolt://%s", boltAdvertisedAddress );
     }
 
     @Override
@@ -131,6 +158,11 @@ public class CoreClusterMember implements ClusterMember
         return database.getDependencyResolver().resolveDependency( CoreState.class );
     }
 
+    public RaftMachine raft()
+    {
+        return database.getDependencyResolver().resolveDependency( RaftMachine.class );
+    }
+
     public MemberId id()
     {
         return database.getDependencyResolver().resolveDependency( RaftMachine.class ).identity();
@@ -157,5 +189,11 @@ public class CoreClusterMember implements ClusterMember
     public int serverId()
     {
         return serverId;
+    }
+
+    @Override
+    public ClientConnectorAddresses clientConnectorAddresses()
+    {
+        return ClientConnectorAddresses.extractFromConfig( new Config( this.config ) );
     }
 }

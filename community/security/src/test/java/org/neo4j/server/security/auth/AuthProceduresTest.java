@@ -19,97 +19,59 @@
  */
 package org.neo4j.server.security.auth;
 
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.ExpectedException;
 
-import org.neo4j.collection.RawIterator;
+import org.neo4j.graphdb.factory.GraphDatabaseSettings;
 import org.neo4j.kernel.api.exceptions.ProcedureException;
 import org.neo4j.kernel.api.security.AccessMode;
-import org.neo4j.kernel.api.security.AuthSubject;
 import org.neo4j.kernel.impl.api.integrationtest.KernelIntegrationTest;
+import org.neo4j.test.TestGraphDatabaseBuilder;
 
-import static junit.framework.TestCase.fail;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.emptyIterable;
-import static org.hamcrest.core.IsEqual.equalTo;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.neo4j.helpers.collection.Iterators.asList;
 import static org.neo4j.kernel.api.proc.ProcedureSignature.procedureName;
 
 public class AuthProceduresTest extends KernelIntegrationTest
 {
-    @Test
-    public void callDeprecatedChangePasswordWithAccessModeInDbmsMode() throws Throwable
-    {
-        // Given
-        Object[] inputArray = new Object[1];
-        inputArray[0] = "newPassword";
-        AuthSubject authSubject = mock( AuthSubject.class );
-
-        // When
-        RawIterator<Object[], ProcedureException> stream = dbmsOperations( authSubject )
-                .procedureCallDbms( procedureName( "dbms", "changePassword" ), inputArray );
-
-        // Then
-        verify( authSubject ).setPassword( (String) inputArray[0], false );
-        assertThat( asList( stream ), emptyIterable() );
-    }
+    @Rule
+    public ExpectedException exception = ExpectedException.none();
 
     @Test
     public void shouldFailWhenDeprecatedChangePasswordWithStaticAccessModeInDbmsMode() throws Throwable
     {
-        try
-        {
-            // Given
-            Object[] inputArray = new Object[1];
-            inputArray[0] = "newPassword";
-
-            // When
-            dbmsOperations( AccessMode.Static.NONE ).procedureCallDbms( procedureName( "dbms", "changePassword" ), inputArray );
-            fail( "Should have failed." );
-        }
-        catch ( Exception e )
-        {
-            // Then
-            assertThat( e.getClass(), equalTo( ProcedureException.class ) );
-        }
-    }
-
-    @Test
-    public void callChangePasswordWithAccessModeInDbmsMode() throws Throwable
-    {
         // Given
         Object[] inputArray = new Object[1];
         inputArray[0] = "newPassword";
-        AuthSubject authSubject = mock( AuthSubject.class );
-
-        // When
-        RawIterator<Object[],ProcedureException> stream = dbmsOperations( authSubject )
-                .procedureCallDbms( procedureName( "dbms", "security", "changePassword" ), inputArray );
 
         // Then
-        verify( authSubject ).setPassword( (String) inputArray[0], false );
-        assertThat( asList( stream ), emptyIterable() );
+        exception.expect( ProcedureException.class );
+        exception.expectMessage( "Anonymous cannot change password" );
+
+        // When
+        dbmsOperations()
+                .procedureCallDbms( procedureName( "dbms", "changePassword" ), inputArray, AccessMode.Static.NONE );
     }
 
     @Test
     public void shouldFailWhenChangePasswordWithStaticAccessModeInDbmsMode() throws Throwable
     {
-        try
-        {
-            // Given
-            Object[] inputArray = new Object[1];
-            inputArray[0] = "newPassword";
+        // Given
+        Object[] inputArray = new Object[1];
+        inputArray[0] = "newPassword";
 
-            // When
-            dbmsOperations( AccessMode.Static.NONE )
-                    .procedureCallDbms( procedureName( "dbms", "security", "changePassword" ), inputArray );
-            fail( "Should have failed." );
-        }
-        catch ( Exception e )
-        {
-            // Then
-            assertThat( e.getClass(), equalTo( ProcedureException.class ) );
-        }
+        // Then
+        exception.expect( ProcedureException.class );
+        exception.expectMessage( "Anonymous cannot change password" );
+
+        // When
+        dbmsOperations().procedureCallDbms( procedureName( "dbms", "security", "changePassword" ), inputArray,
+                AccessMode.Static.NONE );
+    }
+
+    @Override
+    protected TestGraphDatabaseBuilder configure( TestGraphDatabaseBuilder graphDatabaseBuilder )
+    {
+        graphDatabaseBuilder.setConfig( GraphDatabaseSettings.auth_enabled, "true" );
+        return graphDatabaseBuilder;
     }
 }
